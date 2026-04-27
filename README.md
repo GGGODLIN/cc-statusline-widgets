@@ -1,81 +1,135 @@
 # cc-statusline-widgets
 
-自製 Claude Code statusline — 砍 ccstatusline，wrapper + daemon hybrid 架構，主動機是**擴展性**（未來想加 N 個 web API widget / OS metric / 自定 widget 不受第三方限制）。
+自製 Claude Code statusline — 砍 ccstatusline，wrapper + daemon hybrid 架構。動機是**擴展性**（未來想加 N 個 web API widget / OS metric / 自定 widget 不受第三方限制）。
 
 ## Status
 
-2026-04-27 reset for E architecture rewrite。Phase 1 逆向完成，Phase 2 結論 = bash。Phase 3 實作中。
+2026-04-27 起步並 pivot 兩次（D-route → E-route）。**Phase 3 實作完成可驗收**。
 
-## 架構（E hybrid）
+## 安裝（cross-machine 通用）
 
-```
-[Wrapper — statusLine.command]                  [後台 daemon — launchd]
-~/.claude/scripts/cc-statusline.sh              一支統一 daemon
-   │                                              │
-   │  CC 觸發時跑（每秒/event）                       │  自己 cycle，per-widget interval
-   ▼                                              ▼
-   1. jq 解析 stdin                              ─ battery widget   (cycle 1s)
-   2. 當場算依賴 cc session 的：                  ─ disk widget      (cycle 60s)
-      - model（從 stdin）                        ─ free-memory      (cycle 5s)
-      - session-cost（stdin cost.total_cost_usd） ─ subscription    (cycle 5min, claude.ai api)
-      - context-bar（stdin context_window）       ─ ... 未來新 widget
-      - tokens-total（stdin context_window）      │
-      - quota 5h/7d（stdin rate_limits）         寫到：
-      - git-branch / ahead-behind（cwd）         /tmp/cc-widget-cache/<name>.txt
-   3. cat daemon files
-   4. 拼接 3 行 ANSI 字串輸出
+```bash
+git clone <repo> ~/Desktop/projects/cc-statusline-widgets
+cd ~/Desktop/projects/cc-statusline-widgets
+bash scripts/install.sh
 ```
 
-CC 觸發時 wrapper 跑：
-- bash startup ~5ms
-- jq stdin parse ~5ms
-- widget render（含 git）~30-50ms
-- cat daemon files ~1ms
-- **Cold start 估 40-80ms**（vs ccstatusline 430ms）
+`install.sh` 做：
+1. 拷貝 wrapper / daemon / free-memory script 到 `~/.claude/scripts/cc-statusline/`
+2. 拷貝 plist 到 `~/Library/LaunchAgents/`
+3. `launchctl bootstrap` 啟動 daemon（idempotent — 重跑 OK）
 
-## 動機
+接著手動把 `~/.claude/settings.json` 的 `statusLine.command` 改成：
 
-- 不為 battery「立刻看到」（那要走 osascript notification 不靠 statusline）
-- 為**擴展性** — 加 widget 一個 if 分支
-- 為**自由 cycle** — daemon-side 每個 widget 自己 interval
-- 為**1Hz 可行** — wrapper cold start 40-80ms 配 1Hz refreshInterval CPU < 5% 一核
+```
+/Users/<USERNAME>/.claude/scripts/cc-statusline/wrapper.sh
+```
 
-## 關鍵發現（Phase 1 逆向 ccstatusline）
+## 架構
 
-CC stdin JSON **已給算好的**：cost / context_window / rate_limits / token usage。**transcript parse 是 fallback 不是必要**。詳見 [docs/reverse-engineering.md](docs/reverse-engineering.md)。
+```
+[Wrapper — statusLine.command]                   [後台 daemon — launchd KeepAlive]
+~/.claude/scripts/cc-statusline/wrapper.sh        ~/.claude/scripts/cc-statusline/daemon.sh
+   │ CC 觸發 (event/refreshInterval)                  │ while true 自己 cycle
+   ▼ ~130ms cold start                                ▼ per-widget cycle
+   1. jq 解析 stdin                                ─ battery (1s)  → cc-statusline-battery.sh
+   2. 當場算（依賴 cc session）：                    ─ disk    (60s) → disk-usage.sh
+      - model (stdin)                              ─ memory  (5s)  → free-memory.sh
+      - session-cost (stdin cost.total_cost_usd)
+      - context-bar (stdin context_window)         寫到：
+      - tokens-total (stdin current_usage 加總)    /tmp/cc-widget-cache/<name>.txt
+      - git-branch / ahead-behind (cwd)            (atomic write via tmp+mv)
+      - session-clock (transcript first ts)
+   3. 跑 ~/.claude/scripts/usage-color.sh (Line 2 quota)
+   4. cat /tmp/cc-widget-cache/{battery,disk,memory}.txt
+   5. 拼接 3 行 ANSI 輸出
+```
 
-## Decisions
+## Phase 3 實作驗收
+
+| Widget | 來源 | 狀態 |
+|---|---|---|
+| Model | stdin `.model.display_name` | ✅ |
+| Skill | (stub `Skill: -`) | ⚠️ known limitation — 第一版未做 |
+| Git branch + ahead/behind | git command（cwd from stdin） | ✅ |
+| Cost | stdin `.cost.total_cost_usd` | ✅ |
+| Session clock | transcript first timestamp | ✅（無 transcript 時 fallback `-`） |
+| Quota (Line 2) | `~/.claude/scripts/usage-color.sh` 直接呼叫 | ✅ |
+| Context bar | stdin `.context_window.used_percentage` + 進度條 | ✅ |
+| Tokens total | stdin `.context_window.current_usage` 4 欄加總 | ✅ |
+| Free memory | daemon → vm_stat 算 free+inactive+spec | ✅ |
+| Disk | daemon → `disk-usage.sh` (Container Free Space) | ✅ |
+| Battery | daemon → `cc-statusline-battery.sh` | ✅ |
+
+### Cold start benchmark
+
+| | Cold start | 1Hz CPU 預估 |
+|---|---|---|
+| ccstatusline (替換前) | 430ms | 43% 一核 |
+| **本 wrapper** | **~130ms (10 次取樣 0.10-0.18s)** | **~13% 一核** |
+
+提速 ~3.3×。1Hz refreshInterval 變得可行（之前 ccstatusline 不行）。
+
+## 卸載
+
+```bash
+launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/com.user.cc-statusline-daemon.plist
+rm ~/Library/LaunchAgents/com.user.cc-statusline-daemon.plist
+rm -rf ~/.claude/scripts/cc-statusline
+# 把 settings.json statusLine.command 改回 "ccstatusline"
+```
+
+## 已知限制
+
+- **Skills widget** — stub `-`。要 reverse engineer ccstatusline `--hook` 機制（PreToolUse(Skill) + UserPromptSubmit 寫的 state file 在哪），第二版補。
+- **Session clock** — 從 transcript 第一行 timestamp 算，無 transcript 時 fallback `-`。CC 有時候 stdin 沒給 transcript_path（preview 模式）會看到。
+- **Hardcoded `/Users/linhancheng`** — daemon plist 跟 daemon.sh 寫死路徑。換機要重跑 install.sh，路徑不同會壞。
+
+## Phase 進度
+
+- [x] **Phase 1** Reverse-engineer ccstatusline → [docs/reverse-engineering.md](docs/reverse-engineering.md)
+- [x] **Phase 2** bash decision → [docs/decisions.md](docs/decisions.md)
+- [x] **Phase 3** 實作完成（commit pending）
+  - [x] wrapper.sh
+  - [x] daemon.sh + free-memory.sh
+  - [x] launchd plist
+  - [x] install.sh
+  - [x] settings.json 切到 wrapper
+  - [x] 驗證輸出對齊 + cold start 測試
+  - [ ] **觀察期 1-2 週**（user 驗收）
+  - [ ] 觀察通過後：ccstatusline npm uninstall + 兩個 hook 清理
+
+## ADR
 
 詳見 [docs/decisions.md](docs/decisions.md)
+- ADR-001 砍 ccstatusline
+- ADR-002 bash + jq（不用 Go）
+- ADR-003 統一 daemon（不走 per-widget plist）
 
-- ADR-001: 砍 ccstatusline 改自製
-- ADR-002: bash + jq（不用 Go）
-- ADR-003: 統一 daemon 不走 per-widget plist
+## Cross-machine
 
-## Phases
-
-- [x] **Phase 1** Reverse-engineer ccstatusline transcript widgets（[docs/reverse-engineering.md](docs/reverse-engineering.md)）
-- [x] **Phase 2** Decision: bash vs Go → **bash**（[docs/decisions.md](docs/decisions.md)）
-- [ ] **Phase 3** 實作
-  - [ ] wrapper script（bash + jq）
-  - [ ] 統一 daemon（launchd）
-  - [ ] settings.json statusLine.command 切到 wrapper
-  - [ ] 平行運作觀察期 1-2 週
-  - [ ] ccstatusline 移除（npm uninstall + hook config 清理）
-
-## 跨機 sync
-
-- wrapper script + daemon script 在 `~/.claude/scripts/`（git sync OK）
-- launchd plist macOS-specific → 寫 cross-machine task
-
-## 不做
-
-- Skills widget（待評估，第一版可不做）
-- 走 Go binary（ADR-002）
-- 留 ccstatusline 並行（ADR-001）
+需要 cross-machine task — launchd plist + script 路徑都 macOS-specific 且 hardcoded。
 
 ## History
 
-- `542e498` M1 D-route battery PoC（M1 lessons → ADR-001）
-- `68cbe8c` Reset for E architecture rewrite
-- (current) Phase 1 reverse-engineering + Phase 2 bash decision
+```
+c529414 docs: Phase 1 reverse-engineering + Phase 2 bash decision
+68cbe8c chore: reset for E architecture rewrite
+542e498 feat: cc-statusline-widgets M1 battery PoC (D-route, lessons learned)
+```
+
+## 故障排除
+
+```bash
+# Daemon 沒跑？
+launchctl list | grep cc-statusline-daemon
+ps aux | grep cc-statusline-widgets | grep -v grep
+cat /tmp/cc-statusline-daemon.log
+
+# 看 daemon 寫的 cache
+ls -la /tmp/cc-widget-cache/
+cat /tmp/cc-widget-cache/battery.txt
+
+# 手動跑 wrapper 看輸出
+echo '{"model":{"display_name":"Sonnet"}}' | ~/.claude/scripts/cc-statusline/wrapper.sh
+```
