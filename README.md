@@ -96,8 +96,12 @@ rm -rf ~/.claude/scripts/cc-statusline
   - [x] install.sh
   - [x] settings.json 切到 wrapper
   - [x] 驗證輸出對齊 + cold start 測試
-  - [ ] **觀察期 1-2 週**（user 驗收）
-  - [ ] 觀察通過後：ccstatusline npm uninstall + 兩個 hook 清理
+  - [x] **觀察期通過 → ccstatusline 完全清乾淨 (2026-04-27)**
+    - `npm uninstall -g ccstatusline`
+    - settings.json 移除 PreToolUse(Skill) + UserPromptSubmit 兩個 `ccstatusline --hook` 引用
+    - 移除 `~/.config/ccstatusline/` config dir
+    - 移除 dev-only `compare.sh` + wrapper 內 stdin dump
+    - 改 `refreshInterval=1` 配 1Hz 拔線秒看到
 
 ## ADR
 

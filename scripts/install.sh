@@ -14,6 +14,7 @@ mkdir -p "$HOME/Library/LaunchAgents"
 cp "$REPO_ROOT/scripts/wrapper.sh"      "$DEST/"
 cp "$REPO_ROOT/scripts/daemon.sh"       "$DEST/"
 cp "$REPO_ROOT/scripts/free-memory.sh"  "$DEST/"
+cp "$REPO_ROOT/scripts/cpu-usage.sh"    "$DEST/"
 chmod +x "$DEST"/*.sh
 
 cp "$REPO_ROOT/launchd/$PLIST_NAME" "$PLIST_DEST"

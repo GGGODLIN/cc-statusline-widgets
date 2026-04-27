@@ -11,6 +11,7 @@ WIDGETS=(
   "battery|/Users/linhancheng/.claude/scripts/cc-statusline-battery.sh|1"
   "disk|/Users/linhancheng/.claude/scripts/disk-usage.sh|60"
   "memory|/Users/linhancheng/.claude/scripts/cc-statusline/free-memory.sh|5"
+  "cpu|/Users/linhancheng/.claude/scripts/cc-statusline/cpu-usage.sh|5"
 )
 
 write_atomic() {

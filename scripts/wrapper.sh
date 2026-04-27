@@ -40,25 +40,22 @@ fi
 
 skills_fmt="Skill: -"
 
-# session-clock from transcript first timestamp
-transcript=$(jqr '.transcript_path // ""')
-session_clock_fmt="Session: -"
-if [[ -n "$transcript" && -f "$transcript" ]]; then
-  first_ts=$(head -n 1 "$transcript" 2>/dev/null | jq -r '.timestamp // ""' 2>/dev/null || true)
-  if [[ -n "$first_ts" ]]; then
-    ts_trim="${first_ts:0:19}"
-    first_epoch=$(date -j -u -f "%Y-%m-%dT%H:%M:%S" "$ts_trim" +%s 2>/dev/null || echo "")
-    if [[ -n "$first_epoch" ]]; then
-      now=$(date +%s)
-      elapsed=$(( now - first_epoch ))
-      (( elapsed < 0 )) && elapsed=0
-      h=$(( elapsed / 3600 ))
-      m=$(( (elapsed % 3600) / 60 ))
-      if (( h > 0 )); then
-        session_clock_fmt="Session: ${h}h ${m}m"
-      else
-        session_clock_fmt="Session: ${m}m"
-      fi
+# session-clock: aligned with ccstatusline SessionClock.ts (uses stdin cost.total_duration_ms)
+duration_ms=$(jqr '.cost.total_duration_ms // 0')
+session_clock_fmt="Session: 0m"
+if [[ -n "$duration_ms" ]] && (( duration_ms > 0 )); then
+  total_min=$(( duration_ms / 60000 ))
+  if (( total_min < 1 )); then
+    session_clock_fmt="Session: <1m"
+  else
+    h=$(( total_min / 60 ))
+    m=$(( total_min % 60 ))
+    if (( h == 0 )); then
+      session_clock_fmt="Session: ${m}m"
+    elif (( m == 0 )); then
+      session_clock_fmt="Session: ${h}hr"
+    else
+      session_clock_fmt="Session: ${h}hr ${m}m"
     fi
   fi
 fi
@@ -102,27 +99,15 @@ while (( i < bar_width )); do
   fi
   i=$(( i + 1 ))
 done
-ctx_bar_fmt="${bar} ${ctx_used_k}k/${ctx_total_k}k (${ctx_used_int}%)"
-
-# tokens-total
-tokens_total=$(jqr '
-  (.context_window.current_usage.input_tokens // 0) +
-  (.context_window.current_usage.output_tokens // 0) +
-  (.context_window.current_usage.cache_creation_input_tokens // 0) +
-  (.context_window.current_usage.cache_read_input_tokens // 0)
-')
-if (( tokens_total >= 1000 )); then
-  tokens_fmt=$(awk -v t="$tokens_total" 'BEGIN { printf "Total: %.1fk", t/1000 }')
-else
-  tokens_fmt="Total: ${tokens_total}"
-fi
+ctx_bar_fmt="Context: [${bar}] ${ctx_used_k}k/${ctx_total_k}k (${ctx_used_int}%)"
 
 # read daemon-written widgets
+cpu=$(cat "$CACHE_DIR/cpu.txt" 2>/dev/null || printf 'CPU: ?')
 free_mem=$(cat "$CACHE_DIR/memory.txt" 2>/dev/null || printf 'Mem: ?')
 disk=$(cat "$CACHE_DIR/disk.txt" 2>/dev/null || printf '💾 ?')
 battery=$(cat "$CACHE_DIR/battery.txt" 2>/dev/null || printf '🔋?')
 
-line3="${BLUE}$ctx_bar_fmt${RST} | $tokens_fmt | $free_mem | $disk | $battery"
+line3="${BLUE}$ctx_bar_fmt${RST} | $cpu | $free_mem | $disk | $battery"
 
 if [[ -n "$line2" ]]; then
   printf '%s\n%s\n%s\n' "$line1" "$line2" "$line3"
