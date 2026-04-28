@@ -38,7 +38,12 @@ if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null && git rev-parse --is-inside-work-tr
   fi
 fi
 
-skills_fmt="Skill: -"
+skill_name=$(cat "$CACHE_DIR/skill.txt" 2>/dev/null)
+if [[ -n "$skill_name" ]]; then
+  skills_fmt="Skill: $skill_name"
+else
+  skills_fmt="Skill: -"
+fi
 
 # session-clock: aligned with ccstatusline SessionClock.ts (uses stdin cost.total_duration_ms)
 duration_ms=$(jqr '.cost.total_duration_ms // 0')
