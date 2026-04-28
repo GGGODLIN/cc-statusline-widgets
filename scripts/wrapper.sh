@@ -38,7 +38,11 @@ if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null && git rev-parse --is-inside-work-tr
   fi
 fi
 
-skill_name=$(cat "$CACHE_DIR/skill.txt" 2>/dev/null)
+session_id=$(jqr '.session_id // ""')
+skill_name=""
+if [[ -n "$session_id" ]]; then
+  skill_name=$(cat "$CACHE_DIR/skill-${session_id}.txt" 2>/dev/null)
+fi
 if [[ -n "$skill_name" ]]; then
   skills_fmt="Skill: $skill_name"
 else
