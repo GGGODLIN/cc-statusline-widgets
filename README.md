@@ -40,7 +40,7 @@ bash scripts/install.sh
       - tokens-total (stdin current_usage 加總)    /tmp/cc-widget-cache/<name>.txt
       - git-branch / ahead-behind (cwd)            (atomic write via tmp+mv)
       - session-clock (transcript first ts)
-   3. 跑 ~/.claude/scripts/usage-color.sh (Line 2 quota)
+   3. 跑 ~/.claude/scripts/usage-color.sh (Line 2 — optional external script)
    4. cat /tmp/cc-widget-cache/{battery,disk,memory}.txt
    5. 拼接 3 行 ANSI 輸出
 ```
@@ -54,7 +54,7 @@ bash scripts/install.sh
 | Git branch + ahead/behind | git command（cwd from stdin） | ✅ |
 | Cost | stdin `.cost.total_cost_usd` | ✅ |
 | Session clock | transcript first timestamp | ✅（無 transcript 時 fallback `-`） |
-| Quota (Line 2) | `~/.claude/scripts/usage-color.sh` 直接呼叫 | ✅ |
+| Line 2 (optional external) | `~/.claude/scripts/usage-color.sh` if exists, else skipped | ✅ |
 | Context bar | stdin `.context_window.used_percentage` + 進度條 | ✅ |
 | Tokens total | stdin `.context_window.current_usage` 4 欄加總 | ✅ |
 | Free memory | daemon → vm_stat 算 free+inactive+spec | ✅ |

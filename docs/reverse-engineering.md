@@ -60,7 +60,7 @@
 | **`session-cost`** | `data.cost.total_cost_usd` | 🟢 **jq 1 行 — CC 已算好** |
 | **`context-bar`** | `data.context_window.used_percentage` + `current_usage` | 🟢 **jq 取值 + 進度條** |
 | **`tokens-total`** | `data.context_window.current_usage` 累加 input+output+cache_creation+cache_read | 🟢 jq 加總 |
-| `quota` (5h/weekly) | `data.rate_limits.five_hour.used_percentage` 跟 `seven_day` | 🟢 **jq + 不用打 API**（cc-quota-fetcher 仍然有用因為 schema 細節更多） |
+| `rate_limits` (5h/weekly) | `data.rate_limits.five_hour.used_percentage` 跟 `seven_day` | 🟢 jq 取值 + 倒數 format |
 | `skills` | hook state（`--hook` 模式更新） | 🟡 看 src/utils/skills.ts，需要 reverse |
 
 ## Token 累加（fallback only）

@@ -62,7 +62,7 @@ fi
 
 line1="${CYAN}Model: $model_name${RST} | ${GRAY}$skills_fmt${RST} | $git_branch_fmt $git_ab_fmt | ${GREEN}$session_cost_fmt${RST} | ${YELLOW}$session_clock_fmt${RST}"
 
-# ----- Line 2: quota (delegate to existing usage-color.sh) -----
+# ----- Line 2: optional external script -----
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
   line2=$("$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
 else
