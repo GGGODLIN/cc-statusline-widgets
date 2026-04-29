@@ -16,6 +16,48 @@ RST=$'\033[0m'
 input=$(cat)
 jqr() { jq -r "$1" <<<"$input" 2>/dev/null; }
 
+probe_cols() {
+  local pid=$$
+  local i
+  for i in 1 2 3 4 5 6 7 8; do
+    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    [[ -z "$pid" || "$pid" == "0" ]] && break
+    local tty
+    tty=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
+    [[ -z "$tty" || "$tty" == "??" || "$tty" == "?" ]] && continue
+    local size
+    size=$(stty size < "/dev/$tty" 2>/dev/null | awk '{print $2}')
+    [[ -n "$size" && "$size" -gt 0 ]] && { printf '%s' "$size"; return; }
+  done
+  tput cols 2>/dev/null || true
+}
+
+strip_ansi() {
+  printf '%s' "$1" | sed -E $'s/\x1B\\[[0-9;]*[a-zA-Z]//g'
+}
+
+truncate_styled() {
+  local text="$1" max="$2"
+  perl -CSDA -e '
+    my ($max, $text) = @ARGV;
+    my $vis = 0;
+    my $out = "";
+    while ($text =~ /\G(\e\[[0-9;]*[a-zA-Z]|.)/gs) {
+      my $tok = $1;
+      if ($tok =~ /^\e/) {
+        $out .= $tok;
+      } elsif ($vis >= $max - 1) {
+        last;
+      } else {
+        $out .= $tok;
+        $vis++;
+      }
+    }
+    $out .= "\x{2026}\e[0m";
+    print $out;
+  ' -- "$max" "$text"
+}
+
 # ----- Line 1 -----
 model_name=$(jqr '.model.display_name // (if (.model | type) == "string" then .model else "?" end)')
 session_cost_usd=$(jqr '.cost.total_cost_usd // 0')
@@ -70,6 +112,16 @@ if [[ -n "$duration_ms" ]] && (( duration_ms > 0 )); then
 fi
 
 line1="${CYAN}Model: $model_name${RST} | ${GRAY}$skills_fmt${RST} | $git_branch_fmt $git_ab_fmt | ${GREEN}$session_cost_fmt${RST} | ${YELLOW}$session_clock_fmt${RST}"
+
+cols=$(probe_cols)
+if [[ -n "$cols" && "$cols" -gt 0 ]]; then
+  effective_cols=$(( cols - 6 ))
+  (( effective_cols < 20 )) && effective_cols=20
+  line1_plain=$(strip_ansi "$line1")
+  if (( ${#line1_plain} > effective_cols )); then
+    line1=$(truncate_styled "$line1" "$effective_cols")
+  fi
+fi
 
 # ----- Line 2: optional external script -----
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
