@@ -15,8 +15,14 @@ cp "$REPO_ROOT/scripts/wrapper.sh"      "$DEST/"
 cp "$REPO_ROOT/scripts/daemon.sh"       "$DEST/"
 cp "$REPO_ROOT/scripts/free-memory.sh"  "$DEST/"
 cp "$REPO_ROOT/scripts/cpu-usage.sh"    "$DEST/"
+cp "$REPO_ROOT/scripts/thermals.sh"     "$DEST/"
 cp "$REPO_ROOT/scripts/skill-hook.sh"   "$DEST/"
 chmod +x "$DEST"/*.sh
+
+if ! command -v macmon >/dev/null 2>&1 || ! command -v mactop >/dev/null 2>&1; then
+  echo "warning: thermals widget needs both 'macmon' and 'mactop'."
+  echo "  install: brew install macmon mactop"
+fi
 
 cp "$REPO_ROOT/launchd/$PLIST_NAME" "$PLIST_DEST"
 

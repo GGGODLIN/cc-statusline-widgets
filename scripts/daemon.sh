@@ -3,6 +3,9 @@
 # Runs under launchd KeepAlive. Each widget has its own cycle.
 set -uo pipefail
 
+# launchd starts us with a minimal PATH; extend so widgets can find brew tools.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 CACHE_DIR=/tmp/cc-widget-cache
 mkdir -p "$CACHE_DIR"
 
@@ -12,12 +15,30 @@ WIDGETS=(
   "disk|/Users/linhancheng/.claude/scripts/disk-usage.sh|60"
   "memory|/Users/linhancheng/.claude/scripts/cc-statusline/free-memory.sh|5"
   "cpu|/Users/linhancheng/.claude/scripts/cc-statusline/cpu-usage.sh|5"
+  "thermals|/Users/linhancheng/.claude/scripts/cc-statusline/thermals.sh|5"
 )
 
 write_atomic() {
   local path=$1 content=$2
   printf '%s' "$content" > "${path}.tmp" && mv "${path}.tmp" "$path"
 }
+
+# Background mactop loop: feeds fan RPM cache for thermals widget.
+# mactop has ~5s cold start, so we run it isolated from the main per-widget loop.
+if command -v mactop >/dev/null 2>&1; then
+  (
+    while true; do
+      out=$(mactop --headless --count 1 --format json 2>/dev/null) || true
+      if [[ -n "$out" ]]; then
+        printf '%s' "$out" > "$CACHE_DIR/.mactop-fan.json.tmp" \
+          && mv "$CACHE_DIR/.mactop-fan.json.tmp" "$CACHE_DIR/.mactop-fan.json"
+      fi
+      sleep 30
+    done
+  ) &
+  MACTOP_BG_PID=$!
+  trap 'kill "$MACTOP_BG_PID" 2>/dev/null' EXIT INT TERM
+fi
 
 while true; do
   now=$(date +%s)

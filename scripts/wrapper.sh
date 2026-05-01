@@ -32,30 +32,31 @@ probe_cols() {
   tput cols 2>/dev/null || true
 }
 
-strip_ansi() {
-  printf '%s' "$1" | sed -E $'s/\x1B\\[[0-9;]*[a-zA-Z]//g'
-}
-
-truncate_styled() {
-  local text="$1" max="$2"
+fit_to_cols() {
+  # Pass through if visual width <= max, else truncate with ellipsis.
+  # Counts ANSI escapes as zero-width and CJK/emoji codepoints (>= U+1100) as 2 cells.
   perl -CSDA -e '
     my ($max, $text) = @ARGV;
+    my $stripped = $text;
+    $stripped =~ s/\e\[[0-9;]*[a-zA-Z]//g;
+    my $w = 0;
+    for my $c (split //, $stripped) {
+      $w += (ord($c) >= 0x1100) ? 2 : 1;
+    }
+    if ($w <= $max) { print $text; exit; }
     my $vis = 0;
     my $out = "";
     while ($text =~ /\G(\e\[[0-9;]*[a-zA-Z]|.)/gs) {
       my $tok = $1;
-      if ($tok =~ /^\e/) {
-        $out .= $tok;
-      } elsif ($vis >= $max - 1) {
-        last;
-      } else {
-        $out .= $tok;
-        $vis++;
-      }
+      if ($tok =~ /^\e/) { $out .= $tok; next; }
+      my $tw = (ord($tok) >= 0x1100) ? 2 : 1;
+      last if $vis + $tw > $max - 1;
+      $out .= $tok;
+      $vis += $tw;
     }
     $out .= "\x{2026}\e[0m";
     print $out;
-  ' -- "$max" "$text"
+  ' -- "$1" "$2"
 }
 
 # ----- Line 1 -----
@@ -113,16 +114,6 @@ fi
 
 line1="${CYAN}Model: $model_name${RST} | ${GRAY}$skills_fmt${RST} | $git_branch_fmt $git_ab_fmt | ${GREEN}$session_cost_fmt${RST} | ${YELLOW}$session_clock_fmt${RST}"
 
-cols=$(probe_cols)
-if [[ -n "$cols" && "$cols" -gt 0 ]]; then
-  effective_cols=$(( cols - 6 ))
-  (( effective_cols < 20 )) && effective_cols=20
-  line1_plain=$(strip_ansi "$line1")
-  if (( ${#line1_plain} > effective_cols )); then
-    line1=$(truncate_styled "$line1" "$effective_cols")
-  fi
-fi
-
 # ----- Line 2: optional external script -----
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
   line2=$("$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
@@ -164,11 +155,24 @@ ctx_bar_fmt="Context: [${bar}] ${ctx_used_k}k/${ctx_total_k}k (${ctx_used_int}%)
 
 # read daemon-written widgets
 cpu=$(cat "$CACHE_DIR/cpu.txt" 2>/dev/null || printf 'CPU: ?')
+thermals=$(cat "$CACHE_DIR/thermals.txt" 2>/dev/null || printf '🌡️ ?')
 free_mem=$(cat "$CACHE_DIR/memory.txt" 2>/dev/null || printf 'Mem: ?')
 disk=$(cat "$CACHE_DIR/disk.txt" 2>/dev/null || printf '💾 ?')
 battery=$(cat "$CACHE_DIR/battery.txt" 2>/dev/null || printf '🔋?')
 
-line3="${BLUE}$ctx_bar_fmt${RST} | $cpu | $free_mem | $disk | $battery"
+line3="${BLUE}$ctx_bar_fmt${RST} | $cpu | $thermals | $free_mem | $disk | $battery"
+
+# ----- Truncate all lines to fit terminal width -----
+cols=$(probe_cols)
+effective_cols=20
+if [[ -n "$cols" && "$cols" -gt 0 ]]; then
+  effective_cols=$(( cols - 6 ))
+  (( effective_cols < 20 )) && effective_cols=20
+fi
+
+line1=$(fit_to_cols "$effective_cols" "$line1")
+[[ -n "$line2" ]] && line2=$(fit_to_cols "$effective_cols" "$line2")
+line3=$(fit_to_cols "$effective_cols" "$line3")
 
 if [[ -n "$line2" ]]; then
   printf '%s\n%s\n%s\n' "$line1" "$line2" "$line3"

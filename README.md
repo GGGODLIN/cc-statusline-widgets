@@ -14,6 +14,15 @@ cd ~/Desktop/projects/cc-statusline-widgets
 bash scripts/install.sh
 ```
 
+### 依賴
+
+- 內建：`bash`, `jq`, `awk`, `iostat`, `vm_stat`
+- thermals widget（CPU/GPU 溫度 + 風扇 RPM，Apple Silicon only）：
+  ```
+  brew install macmon mactop
+  ```
+  沒裝會顯示 `🌡️ ?`，其他 widget 不受影響。
+
 `install.sh` 做：
 1. 拷貝 wrapper / daemon / free-memory script 到 `~/.claude/scripts/cc-statusline/`
 2. 拷貝 plist 到 `~/Library/LaunchAgents/`
@@ -32,14 +41,17 @@ bash scripts/install.sh
 ~/.claude/scripts/cc-statusline/wrapper.sh        ~/.claude/scripts/cc-statusline/daemon.sh
    │ CC 觸發 (event/refreshInterval)                  │ while true 自己 cycle
    ▼ ~130ms cold start                                ▼ per-widget cycle
-   1. jq 解析 stdin                                ─ battery (1s)  → cc-statusline-battery.sh
-   2. 當場算（依賴 cc session）：                    ─ disk    (60s) → disk-usage.sh
-      - model (stdin)                              ─ memory  (5s)  → free-memory.sh
-      - session-cost (stdin cost.total_cost_usd)
-      - context-bar (stdin context_window)         寫到：
-      - tokens-total (stdin current_usage 加總)    /tmp/cc-widget-cache/<name>.txt
-      - git-branch / ahead-behind (cwd)            (atomic write via tmp+mv)
-      - session-clock (transcript first ts)
+   1. jq 解析 stdin                                ─ battery  (1s)  → cc-statusline-battery.sh
+   2. 當場算（依賴 cc session）：                    ─ disk     (60s) → disk-usage.sh
+      - model (stdin)                              ─ memory   (5s)  → free-memory.sh
+      - session-cost (stdin cost.total_cost_usd)   ─ cpu      (5s)  → cpu-usage.sh
+      - context-bar (stdin context_window)         ─ thermals (5s)  → thermals.sh (macmon)
+      - tokens-total (stdin current_usage 加總)
+      - git-branch / ahead-behind (cwd)            另外 fork 一個 30s 背景 loop 跑 mactop
+      - session-clock (transcript first ts)        寫 .mactop-fan.json，給 thermals 讀風扇
+
+                                                   寫到 /tmp/cc-widget-cache/<name>.txt
+                                                   (atomic write via tmp+mv)
    3. 跑 ~/.claude/scripts/usage-color.sh (Line 2 — optional external script)
    4. cat /tmp/cc-widget-cache/{battery,disk,memory}.txt
    5. 拼接 3 行 ANSI 輸出
@@ -60,6 +72,7 @@ bash scripts/install.sh
 | Free memory | daemon → vm_stat 算 free+inactive+spec | ✅ |
 | Disk | daemon → `disk-usage.sh` (Container Free Space) | ✅ |
 | Battery | daemon → `cc-statusline-battery.sh` | ✅ |
+| Thermals (CPU/GPU 溫度 + 風扇 RPM) | daemon → `thermals.sh` (macmon + mactop cache) | ✅ |
 
 ### Cold start benchmark
 
