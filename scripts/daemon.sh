@@ -23,6 +23,15 @@ write_atomic() {
   printf '%s' "$content" > "${path}.tmp" && mv "${path}.tmp" "$path"
 }
 
+write_json_companion() {
+  local name="$1" plain="$2" ts="$3"
+  python3 -c "
+import json, sys
+print(json.dumps({'display': sys.argv[1], 'ts': int(sys.argv[2])}))
+" "$plain" "$ts" > "$CACHE_DIR/$name.json.tmp.$$" \
+    && mv "$CACHE_DIR/$name.json.tmp.$$" "$CACHE_DIR/$name.json"
+}
+
 # Background mactop loop: feeds fan RPM cache for thermals widget.
 # mactop has ~5s cold start, so we run it isolated from the main per-widget loop.
 if command -v mactop >/dev/null 2>&1; then
@@ -54,6 +63,8 @@ while true; do
         out=$("$cmd" 2>/dev/null) || true
         if [[ -n "$out" ]]; then
           write_atomic "$CACHE_DIR/$name.txt" "$out"
+          plain=$(printf '%s' "$out" | sed -E $'s/\x1b\\[[0-9;]*[a-zA-Z]//g')
+          write_json_companion "$name" "$plain" "$(date +%s)"
         fi
       fi
       echo "$now" > "$last_file"
