@@ -92,7 +92,7 @@ else
   skills_fmt="Skill: -"
 fi
 
-# ----- cc-i18n-proxy web statusline bridge (opt-in via SKILL.md presence) -----
+# ----- cc-i18n-proxy web statusline bridge (active when uuid file present) -----
 intl_uuid=""
 if [[ -n "$cwd" ]]; then
   bridge_key="${CMUX_SURFACE_ID:-}"
