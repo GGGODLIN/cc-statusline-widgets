@@ -92,30 +92,6 @@ else
   skills_fmt="Skill: -"
 fi
 
-# ----- cc-i18n-proxy web statusline bridge (active when uuid file present) -----
-intl_uuid=""
-if [[ -n "$cwd" ]]; then
-  bridge_key="${CMUX_SURFACE_ID:-}"
-  if [[ -z "$bridge_key" && -n "$session_id" ]]; then
-    bridge_key="$session_id"
-  fi
-  if [[ -z "$bridge_key" ]]; then
-    bridge_key=$(printf '%s' "$cwd" | shasum -a 256 | cut -c1-12)
-  fi
-  uuid_file="$HOME/.cc-i18n-proxy/intl-uuid-by-key/$bridge_key.uuid"
-  if [[ -f "$uuid_file" ]]; then
-    intl_uuid=$(tr -d '[:space:]' < "$uuid_file")
-  fi
-fi
-if [[ -n "$intl_uuid" ]] && [[ "$intl_uuid" =~ ^[a-fA-F0-9]{1,64}$ ]]; then
-  out_dir="$CACHE_DIR/by-intl-uuid"
-  mkdir -p "$out_dir"
-  tmp_file="$out_dir/$intl_uuid.json.tmp.$$"
-  final_file="$out_dir/$intl_uuid.json"
-  printf '%s' "$input" > "$tmp_file" && mv "$tmp_file" "$final_file"
-fi
-# ----- end bridge -----
-
 # session-clock: aligned with ccstatusline SessionClock.ts (uses stdin cost.total_duration_ms)
 duration_ms=$(jqr '.cost.total_duration_ms // 0')
 session_clock_fmt="Session: 0m"
@@ -194,6 +170,9 @@ if [[ -n "$cols" && "$cols" -gt 0 ]]; then
   (( effective_cols < 20 )) && effective_cols=20
 fi
 
+line1_full="$line1"
+line2_full="$line2"
+line3_full="$line3"
 line1=$(fit_to_cols "$effective_cols" "$line1")
 [[ -n "$line2" ]] && line2=$(fit_to_cols "$effective_cols" "$line2")
 line3=$(fit_to_cols "$effective_cols" "$line3")
@@ -203,3 +182,31 @@ if [[ -n "$line2" ]]; then
 else
   printf '%s\n%s\n' "$line1" "$line3"
 fi
+
+# ----- cc-i18n-proxy web statusline bridge (active when uuid file present) -----
+intl_uuid=""
+if [[ -n "$cwd" ]]; then
+  bridge_key="${CMUX_SURFACE_ID:-}"
+  if [[ -z "$bridge_key" && -n "$session_id" ]]; then
+    bridge_key="$session_id"
+  fi
+  if [[ -z "$bridge_key" ]]; then
+    bridge_key=$(printf '%s' "$cwd" | shasum -a 256 | cut -c1-12)
+  fi
+  uuid_file="$HOME/.cc-i18n-proxy/intl-uuid-by-key/$bridge_key.uuid"
+  if [[ -f "$uuid_file" ]]; then
+    intl_uuid=$(tr -d '[:space:]' < "$uuid_file")
+  fi
+fi
+if [[ -n "$intl_uuid" ]] && [[ "$intl_uuid" =~ ^[a-fA-F0-9]{1,64}$ ]]; then
+  out_dir="$CACHE_DIR/by-intl-uuid"
+  mkdir -p "$out_dir"
+  tmp_file="$out_dir/$intl_uuid.json.tmp.$$"
+  final_file="$out_dir/$intl_uuid.json"
+  jq --arg l1 "$line1_full" --arg l2 "$line2_full" --arg l3 "$line3_full" \
+     '. + {"_lines": [$l1, $l2, $l3]}' \
+     <<<"$input" > "$tmp_file" 2>/dev/null \
+     && mv "$tmp_file" "$final_file" \
+     || rm -f "$tmp_file"
+fi
+# ----- end bridge -----
