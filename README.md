@@ -150,3 +150,12 @@ cat /tmp/cc-widget-cache/battery.txt
 # 手動跑 wrapper 看輸出
 echo '{"model":{"display_name":"Sonnet"}}' | ~/.claude/scripts/cc-statusline/wrapper.sh
 ```
+
+## Web statusline bridge
+
+For consumers that want to render the statusline outside the terminal (e.g., a sibling web-render project consuming these files via SSE):
+
+- **`/tmp/cc-widget-cache/by-intl-uuid/<uuid>.json`** — `wrapper.sh` writes the full CC stdin payload here every cc-statusline refresh, keyed by the intl uuid resolved via `~/.cc-i18n-proxy/intl-uuid-by-key/<KEY>.uuid` (KEY = `CMUX_SURFACE_ID || cc_session_id || sha256(cwd)[:12]`).
+- **`/tmp/cc-widget-cache/<metric>.json`** — `daemon.sh` writes `{display, ts}` JSON companions for `cpu / memory / thermals / disk / battery` alongside the existing ANSI `.txt` files.
+
+Consumers should read these files directly; mtime > 30s for the per-uuid file or mtime > 60s for host metrics indicates the source is stale.
