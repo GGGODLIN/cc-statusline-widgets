@@ -64,7 +64,7 @@ while true; do
         if [[ -n "$out" ]]; then
           write_atomic "$CACHE_DIR/$name.txt" "$out"
           plain=$(printf '%s' "$out" | sed -E $'s/\x1b\\[[0-9;]*[a-zA-Z]//g')
-          write_json_companion "$name" "$plain" "$(date +%s)"
+          write_json_companion "$name" "$plain" "$(date +%s)" || true
         fi
       fi
       echo "$now" > "$last_file"
