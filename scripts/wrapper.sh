@@ -121,9 +121,15 @@ ACTIVE_PID=$(tr -d '[:space:]' < "$QUOTA_CACHE_DIR/vendor-active-profile" 2>/dev
 
 fmt_vendor_balance() {
   local vendor=$1 label=$2 red_thresh=$3 yellow_thresh=$4
-  [[ -z "$ACTIVE_PID" ]] && return
-  local json="$QUOTA_CACHE_DIR/vendor-${vendor}-${ACTIVE_PID}.json"
-  local status="$QUOTA_CACHE_DIR/vendor-${vendor}-${ACTIVE_PID}.status"
+  local pid="$ACTIVE_PID"
+  if [[ -z "$pid" ]]; then
+    local first_json
+    first_json=$(ls "$QUOTA_CACHE_DIR/vendor-${vendor}"-[0-9a-f]*.json 2>/dev/null | head -1)
+    [[ -n "$first_json" ]] && pid=$(basename "$first_json" .json | sed "s/^vendor-${vendor}-//")
+  fi
+  [[ -z "$pid" ]] && return
+  local json="$QUOTA_CACHE_DIR/vendor-${vendor}-${pid}.json"
+  local status="$QUOTA_CACHE_DIR/vendor-${vendor}-${pid}.status"
 
   if [[ -f "$status" ]]; then
     local reason
@@ -165,10 +171,63 @@ fmt_vendor_balance() {
   printf '%s%s%s%s%s' "$sep" "$c" "$sym" "$balance" "$RST"
 }
 
+fmt_all_vendor_balances() {
+  local vendor=$1 label=$2
+  local result="" first=1
+  for json in "$QUOTA_CACHE_DIR/vendor-${vendor}"-[0-9a-f]*.json; do
+    [[ ! -f "$json" ]] && continue
+    [[ "$json" == *-plan-* ]] && continue
+    local base="${json%.json}"
+    [[ -f "${base}.status" ]] && continue
+
+    local balance currency
+    balance=$(jq -r '.data.balance // ""' "$json" 2>/dev/null)
+    currency=$(jq -r '.data.currency // "USD"' "$json" 2>/dev/null)
+    [[ -z "$balance" || "$balance" == "null" || "$balance" == "0" || "$balance" == "0.00" ]] && continue
+
+    local red yellow
+    if [[ "$currency" == "CNY" ]]; then
+      red=8; yellow=30
+    else
+      red=1; yellow=4
+    fi
+
+    local color
+    color=$(awk -v b="$balance" -v r="$red" -v y="$yellow" '
+    BEGIN {
+      if (b + 0 < r) print "R"
+      else if (b + 0 < y) print "Y"
+      else                 print "G"
+    }')
+
+    local c sym="\$"
+    [[ "$currency" == "CNY" ]] && sym="¥"
+    case "$color" in
+      R) c="$RED" ;;
+      Y) c="$YELLOW" ;;
+      *) c="$GREEN" ;;
+    esac
+
+    local sep=""
+    [[ $first -eq 0 ]] && sep="${BLUE} | ${RST}"
+    local lbl=""
+    [[ $first -eq 1 && -n "$label" ]] && lbl="${BLUE}${label}: ${RST}"
+    result="${result}${sep}${lbl}${c}${sym}${balance}${RST}"
+    first=0
+  done
+  [[ -n "$result" ]] && printf '%s' "$result"
+}
+
 fmt_vendor_plan() {
   local vendor=$1
-  [[ -z "$ACTIVE_PID" ]] && return
-  local json="$QUOTA_CACHE_DIR/vendor-${vendor}-plan-${ACTIVE_PID}.json"
+  local pid="$ACTIVE_PID"
+  if [[ -z "$pid" ]]; then
+    local first_json
+    first_json=$(ls "$QUOTA_CACHE_DIR/vendor-${vendor}"-[0-9a-f]*.json 2>/dev/null | head -1)
+    [[ -n "$first_json" ]] && pid=$(basename "$first_json" .json | sed "s/^vendor-${vendor}-//")
+  fi
+  [[ -z "$pid" ]] && return
+  local json="$QUOTA_CACHE_DIR/vendor-${vendor}-plan-${pid}.json"
   [[ ! -f "$json" ]] && return
 
   local pct
@@ -201,7 +260,7 @@ if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
   line2=$("$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
 fi
 
-ds_part=$(fmt_vendor_balance "deepseek" "DS" 1.00 4.00 2>/dev/null || echo "")
+ds_part=$(fmt_all_vendor_balances "deepseek" "DS" 2>/dev/null || echo "")
 mimo_plan=$(fmt_vendor_plan "mimo" 2>/dev/null || echo "")
 mimo_bal=$(fmt_vendor_balance "mimo" "" 2.00 8.00 2>/dev/null || echo "")
 
