@@ -116,7 +116,8 @@ line1="${CYAN}Model: $model_name${RST} | ${GRAY}$skills_fmt${RST} | $git_branch_
 
 # ----- Line 2: Anthropic quota + vendor balances -----
 QUOTA_CACHE_DIR="$HOME/.claude/cache"
-ACTIVE_PID=$(cat "$QUOTA_CACHE_DIR/vendor-active-profile" 2>/dev/null || echo "")
+ACTIVE_PID=$(tr -d '[:space:]' < "$QUOTA_CACHE_DIR/vendor-active-profile" 2>/dev/null || echo "")
+[[ "$ACTIVE_PID" =~ ^[0-9a-f]{8}$ ]] || ACTIVE_PID=""
 
 fmt_vendor_balance() {
   local vendor=$1 label=$2 red_thresh=$3 yellow_thresh=$4
