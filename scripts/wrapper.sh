@@ -114,11 +114,106 @@ fi
 
 line1="${CYAN}Model: $model_name${RST} | ${GRAY}$skills_fmt${RST} | $git_branch_fmt $git_ab_fmt | ${GREEN}$session_cost_fmt${RST} | ${YELLOW}$session_clock_fmt${RST}"
 
-# ----- Line 2: optional external script -----
+# ----- Line 2: Anthropic quota + vendor balances -----
+QUOTA_CACHE_DIR="$HOME/.claude/cache"
+ACTIVE_PID=$(cat "$QUOTA_CACHE_DIR/vendor-active-profile" 2>/dev/null || echo "")
+
+fmt_vendor_balance() {
+  local vendor=$1 label=$2 red_thresh=$3 yellow_thresh=$4
+  [[ -z "$ACTIVE_PID" ]] && return
+  local json="$QUOTA_CACHE_DIR/vendor-${vendor}-${ACTIVE_PID}.json"
+  local status="$QUOTA_CACHE_DIR/vendor-${vendor}-${ACTIVE_PID}.status"
+
+  if [[ -f "$status" ]]; then
+    local reason
+    reason=$(head -1 "$status" 2>/dev/null | cut -f2)
+    if [[ -n "$label" ]]; then
+      printf '%s%s: %s%s' "$RED" "$label" "${reason:-err}" "$RST"
+    else
+      printf '%s%s%s' "$RED" "${reason:-err}" "$RST"
+    fi
+    return
+  fi
+
+  [[ ! -f "$json" ]] && return
+
+  local balance currency
+  balance=$(jq -r '.data.balance // ""' "$json" 2>/dev/null)
+  currency=$(jq -r '.data.currency // "USD"' "$json" 2>/dev/null)
+  [[ -z "$balance" || "$balance" == "null" ]] && return
+
+  local color
+  color=$(awk -v b="$balance" -v r="$red_thresh" -v y="$yellow_thresh" '
+  BEGIN {
+    if (b == "" || b == "0" || b == "0.00")  print "R"
+    else if (b + 0 < r) print "R"
+    else if (b + 0 < y) print "Y"
+    else                 print "G"
+  }')
+
+  local c sym="\$"
+  [[ "$currency" == "CNY" ]] && sym="¥"
+  case "$color" in
+    R) c="$RED" ;;
+    Y) c="$YELLOW" ;;
+    *) c="$GREEN" ;;
+  esac
+
+  local sep=""
+  [[ -n "$label" ]] && sep="${BLUE}${label}: ${RST}"
+  printf '%s%s%s%s%s' "$sep" "$c" "$sym" "$balance" "$RST"
+}
+
+fmt_vendor_plan() {
+  local vendor=$1
+  [[ -z "$ACTIVE_PID" ]] && return
+  local json="$QUOTA_CACHE_DIR/vendor-${vendor}-plan-${ACTIVE_PID}.json"
+  [[ ! -f "$json" ]] && return
+
+  local pct
+  pct=$(jq -r '.data.month_percent // 0' "$json" 2>/dev/null)
+  [[ -z "$pct" || "$pct" == "null" ]] && return
+
+  local pct_fmt
+  pct_fmt=$(awk -v p="$pct" 'BEGIN { printf "%.1f", p * 100 }')
+
+  local color
+  color=$(awk -v p="$pct" '
+  BEGIN {
+    if (p + 0 >= 0.8) print "R"
+    else if (p + 0 >= 0.5) print "Y"
+    else                    print "G"
+  }')
+
+  local c
+  case "$color" in
+    R) c="$RED" ;;
+    Y) c="$YELLOW" ;;
+    *) c="$GREEN" ;;
+  esac
+
+  printf '%s%s%%%s' "$c" "$pct_fmt" "$RST"
+}
+
+line2=""
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
   line2=$("$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
-else
-  line2=""
+fi
+
+ds_part=$(fmt_vendor_balance "deepseek" "DS" 1.00 4.00 2>/dev/null || echo "")
+mimo_plan=$(fmt_vendor_plan "mimo" 2>/dev/null || echo "")
+mimo_bal=$(fmt_vendor_balance "mimo" "" 2.00 8.00 2>/dev/null || echo "")
+
+if [[ -n "$ds_part" ]]; then
+  [[ -n "$line2" ]] && line2="${line2}${BLUE} || ${RST}"
+  line2="${line2}${ds_part}"
+fi
+if [[ -n "$mimo_plan" || -n "$mimo_bal" ]]; then
+  [[ -n "$line2" ]] && line2="${line2}${BLUE} || ${RST}"
+  line2="${line2}${BLUE}MiMo: ${RST}"
+  [[ -n "$mimo_plan" ]] && line2="${line2}${mimo_plan}"
+  [[ -n "$mimo_plan" && -n "$mimo_bal" ]] && line2="${line2}${BLUE} | ${RST}"
+  [[ -n "$mimo_bal" ]] && line2="${line2}${mimo_bal}"
 fi
 
 # ----- Line 3 -----
