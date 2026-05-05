@@ -197,49 +197,48 @@ fmt_vendor_balance() {
   printf '%s%s%s%s%s' "$sep" "$c" "$sym" "$balance" "$RST"
 }
 
-fmt_all_vendor_balances() {
-  local vendor=$1 label=$2
+fmt_deepseek_balances() {
+  local label=$1
   local result="" first=1
-  for json in "$QUOTA_CACHE_DIR/vendor-${vendor}"-[0-9a-f]*.json; do
+  for json in "$QUOTA_CACHE_DIR/vendor-deepseek"-[0-9a-f]*.json; do
     [[ ! -f "$json" ]] && continue
     [[ "$json" == *-plan-* ]] && continue
     local base="${json%.json}"
     [[ -f "${base}.status" ]] && continue
 
-    local balance currency
-    balance=$(jq -r '.data.balance // ""' "$json" 2>/dev/null)
-    currency=$(jq -r '.data.currency // "USD"' "$json" 2>/dev/null)
-    [[ -z "$balance" || "$balance" == "null" || "$balance" == "0" || "$balance" == "0.00" ]] && continue
+    while IFS=$'\t' read -r currency balance; do
+      [[ -z "$balance" || "$balance" == "null" || "$balance" == "0" || "$balance" == "0.00" ]] && continue
 
-    local red yellow
-    if [[ "$currency" == "CNY" ]]; then
-      red=8; yellow=30
-    else
-      red=1; yellow=4
-    fi
+      local red yellow
+      if [[ "$currency" == "CNY" ]]; then
+        red=8; yellow=30
+      else
+        red=1; yellow=4
+      fi
 
-    local color
-    color=$(awk -v b="$balance" -v r="$red" -v y="$yellow" '
-    BEGIN {
-      if (b + 0 < r) print "R"
-      else if (b + 0 < y) print "Y"
-      else                 print "G"
-    }')
+      local color
+      color=$(awk -v b="$balance" -v r="$red" -v y="$yellow" '
+      BEGIN {
+        if (b + 0 < r) print "R"
+        else if (b + 0 < y) print "Y"
+        else                 print "G"
+      }')
 
-    local c sym="\$"
-    [[ "$currency" == "CNY" ]] && sym="¥"
-    case "$color" in
-      R) c="$RED" ;;
-      Y) c="$YELLOW" ;;
-      *) c="$GREEN" ;;
-    esac
+      local c sym="\$"
+      [[ "$currency" == "CNY" ]] && sym="¥"
+      case "$color" in
+        R) c="$RED" ;;
+        Y) c="$YELLOW" ;;
+        *) c="$GREEN" ;;
+      esac
 
-    local sep=""
-    [[ $first -eq 0 ]] && sep="${BLUE} | ${RST}"
-    local lbl=""
-    [[ $first -eq 1 && -n "$label" ]] && lbl="${BLUE}${label}: ${RST}"
-    result="${result}${sep}${lbl}${c}${sym}${balance}${RST}"
-    first=0
+      local sep=""
+      [[ $first -eq 0 ]] && sep="${BLUE} | ${RST}"
+      local lbl=""
+      [[ $first -eq 1 && -n "$label" ]] && lbl="${BLUE}${label}: ${RST}"
+      result="${result}${sep}${lbl}${c}${sym}${balance}${RST}"
+      first=0
+    done < <(jq -r '.data.balance_infos[]? | "\(.currency)\t\(.total_balance)"' "$json" 2>/dev/null)
   done
   [[ -n "$result" ]] && printf '%s' "$result"
 }
@@ -286,7 +285,7 @@ if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
   line2=$("$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
 fi
 
-ds_part=$(fmt_all_vendor_balances "deepseek" "DS" 2>/dev/null || echo "")
+ds_part=$(fmt_deepseek_balances "DS" 2>/dev/null || echo "")
 mimo_plan=$(fmt_vendor_plan "mimo" 2>/dev/null || echo "")
 mimo_bal=$(fmt_vendor_balance "mimo" "" 2.00 8.00 2>/dev/null || echo "")
 
