@@ -34,14 +34,40 @@ probe_cols() {
 
 fit_to_cols() {
   # Pass through if visual width <= max, else truncate with ellipsis.
-  # Counts ANSI escapes as zero-width and CJK/emoji codepoints (>= U+1100) as 2 cells.
+  # ANSI escapes count as zero-width. Per-codepoint width:
+  #   0 — combining marks, ZWJ, variation selectors, skin-tone modifiers
+  #   2 — Hangul Jamo, CJK, fullwidth, emoji
+  #   1 — everything else (incl. block elements U+2580–259F)
   perl -CSDA -e '
+    sub cw {
+      my $o = shift;
+      return 0 if $o == 0x200D
+                || ($o >= 0x0300 && $o <= 0x036F)
+                || ($o >= 0x200B && $o <= 0x200F)
+                || ($o >= 0xFE00 && $o <= 0xFE0F)
+                || ($o >= 0x1F3FB && $o <= 0x1F3FF);
+      return 2 if ($o >= 0x1100 && $o <= 0x115F)
+                || ($o >= 0x2E80 && $o <= 0x303E)
+                || ($o >= 0x3041 && $o <= 0x33FF)
+                || ($o >= 0x3400 && $o <= 0x4DBF)
+                || ($o >= 0x4E00 && $o <= 0x9FFF)
+                || ($o >= 0xA000 && $o <= 0xA4CF)
+                || ($o >= 0xAC00 && $o <= 0xD7A3)
+                || ($o >= 0xF900 && $o <= 0xFAFF)
+                || ($o >= 0xFE30 && $o <= 0xFE4F)
+                || ($o >= 0xFF00 && $o <= 0xFF60)
+                || ($o >= 0xFFE0 && $o <= 0xFFE6)
+                || ($o >= 0x1F300 && $o <= 0x1F9FF)
+                || ($o >= 0x20000 && $o <= 0x2FFFD)
+                || ($o >= 0x30000 && $o <= 0x3FFFD);
+      return 1;
+    }
     my ($max, $text) = @ARGV;
     my $stripped = $text;
     $stripped =~ s/\e\[[0-9;]*[a-zA-Z]//g;
     my $w = 0;
     for my $c (split //, $stripped) {
-      $w += (ord($c) >= 0x1100) ? 2 : 1;
+      $w += cw(ord($c));
     }
     if ($w <= $max) { print $text; exit; }
     my $vis = 0;
@@ -49,7 +75,7 @@ fit_to_cols() {
     while ($text =~ /\G(\e\[[0-9;]*[a-zA-Z]|.)/gs) {
       my $tok = $1;
       if ($tok =~ /^\e/) { $out .= $tok; next; }
-      my $tw = (ord($tok) >= 0x1100) ? 2 : 1;
+      my $tw = cw(ord($tok));
       last if $vis + $tw > $max - 1;
       $out .= $tok;
       $vis += $tw;
