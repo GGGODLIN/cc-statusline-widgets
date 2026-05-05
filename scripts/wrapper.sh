@@ -85,6 +85,11 @@ fit_to_cols() {
   ' -- "$1" "$2"
 }
 
+# Conditional widgets (read early so they can prefix line1 — most visible spot)
+runaway=$(cat "$CACHE_DIR/runaway.txt" 2>/dev/null || printf '')
+runaway_prefix=""
+[[ -n "$runaway" ]] && runaway_prefix="$runaway | "
+
 # ----- Line 1 -----
 model_name=$(jqr '.model.display_name // (if (.model | type) == "string" then .model else "?" end)')
 session_cost_usd=$(jqr '.cost.total_cost_usd // 0')
@@ -138,7 +143,7 @@ if [[ -n "$duration_ms" ]] && (( duration_ms > 0 )); then
   fi
 fi
 
-line1="${CYAN}Model: $model_name${RST} | ${GRAY}$skills_fmt${RST} | $git_branch_fmt $git_ab_fmt | ${GREEN}$session_cost_fmt${RST} | ${YELLOW}$session_clock_fmt${RST}"
+line1="${runaway_prefix}${CYAN}Model: $model_name${RST} | ${GRAY}$skills_fmt${RST} | $git_branch_fmt $git_ab_fmt | ${GREEN}$session_cost_fmt${RST} | ${YELLOW}$session_clock_fmt${RST}"
 
 # ----- Line 2: Anthropic quota + vendor balances -----
 QUOTA_CACHE_DIR="$HOME/.claude/cache"

@@ -16,6 +16,7 @@ WIDGETS=(
   "memory|/Users/linhancheng/.claude/scripts/cc-statusline/free-memory.sh|5"
   "cpu|/Users/linhancheng/.claude/scripts/cc-statusline/cpu-usage.sh|5"
   "thermals|/Users/linhancheng/.claude/scripts/cc-statusline/thermals.sh|5"
+  "runaway|/Users/linhancheng/.claude/scripts/cc-statusline/runaway.sh|10"
 )
 
 write_atomic() {
@@ -61,11 +62,11 @@ while true; do
     if (( now - last >= cycle )); then
       if [[ -x "$cmd" ]]; then
         out=$("$cmd" 2>/dev/null) || true
-        if [[ -n "$out" ]]; then
-          write_atomic "$CACHE_DIR/$name.txt" "$out"
-          plain=$(printf '%s' "$out" | sed -E $'s/\x1b\\[[0-9;]*[a-zA-Z]//g')
-          write_json_companion "$name" "$plain" "$(date +%s)" || true
-        fi
+        # Always write cache (even empty) so conditional widgets like
+        # runaway can clear stale alerts when the situation resolves.
+        write_atomic "$CACHE_DIR/$name.txt" "$out"
+        plain=$(printf '%s' "$out" | sed -E $'s/\x1b\\[[0-9;]*[a-zA-Z]//g')
+        write_json_companion "$name" "$plain" "$(date +%s)" || true
       fi
       echo "$now" > "$last_file"
     fi

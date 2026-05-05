@@ -17,6 +17,7 @@ cp "$REPO_ROOT/scripts/free-memory.sh"  "$DEST/"
 cp "$REPO_ROOT/scripts/cpu-usage.sh"    "$DEST/"
 cp "$REPO_ROOT/scripts/thermals.sh"     "$DEST/"
 cp "$REPO_ROOT/scripts/skill-hook.sh"   "$DEST/"
+cp "$REPO_ROOT/scripts/runaway.sh"      "$DEST/"
 chmod +x "$DEST"/*.sh
 
 if ! command -v macmon >/dev/null 2>&1 || ! command -v mactop >/dev/null 2>&1; then
