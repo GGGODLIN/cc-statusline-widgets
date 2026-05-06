@@ -11,6 +11,7 @@ GREEN=$'\033[38;5;70m'
 YELLOW=$'\033[38;5;178m'
 RED=$'\033[38;5;160m'
 GRAY=$'\033[38;5;243m'
+PURPLE=$'\033[38;5;141m'
 RST=$'\033[0m'
 
 input=$(cat)
@@ -92,8 +93,91 @@ runaway_prefix=""
 
 # ----- Line 1 -----
 model_name=$(jqr '.model.display_name // (if (.model | type) == "string" then .model else "?" end)')
+
+# cache health: last-turn hit% + session flush count + bug-induced waste
+# Algorithm and waste formula adapted from https://github.com/AlexZan/cc-cache-monitor
+cache_hit_fmt=""
+transcript_path=$(jqr '.transcript_path // ""')
+if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
+  cache_data=$(jq -s '
+    [.[] | select(.message.usage and .timestamp)] as $all
+    | [$all[] | .message.usage] as $usages
+    | [$all[]
+        | .message.usage as $u
+        | ($u.cache_read_input_tokens // 0) as $cr
+        | ($u.cache_creation_input_tokens // 0) as $cw
+        | ($u.input_tokens // 0) as $it
+        | ($cr + $cw + $it) as $tot
+        | select($tot > 0 and ($cr * 100 / $tot) >= 50)
+        | $cw] as $healthy
+    | (if ($healthy | length) > 0 then $healthy | min else 0 end) as $base
+    | ($usages | last) as $last
+    | (reduce ($all | sort_by(.timestamp))[] as $m (
+        {w: 0, p: null};
+        $m.message.usage as $u
+        | ($u.cache_read_input_tokens // 0) as $cr
+        | ($u.cache_creation_input_tokens // 0) as $cw
+        | ($u.input_tokens // 0) as $it
+        | ($cr + $cw + $it) as $tot
+        | ($m.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $ts
+        | (if .p == null then 999999 else ($ts - .p) end) as $gap
+        | if $tot > 0 and ($cr * 100 / $tot) < 50 and $gap < 3600 and $cw > $base
+          then {w: (.w + (($cw - $base) * 115 / 100 | floor)), p: $ts}
+          else . + {p: $ts} end
+      ) | .w) as $session_waste
+    | if $last == null then null else
+        ($last.cache_read_input_tokens // 0) as $cr
+        | ($last.cache_creation_input_tokens // 0) as $cw
+        | ($last.input_tokens // 0) as $it
+        | ($cr + $cw + $it) as $tot
+        | {
+            hit: (if $tot > 0 then ($cr * 100 / $tot | floor) else -1 end),
+            flushes: ([$usages[]
+              | (.cache_read_input_tokens // 0) as $r
+              | (.cache_creation_input_tokens // 0) as $w
+              | (.input_tokens // 0) as $i
+              | ($r + $w + $i) as $t
+              | select($t > 0 and ($r * 100 / $t) < 50)] | length),
+            session_waste: $session_waste
+          }
+      end
+  ' "$transcript_path" 2>/dev/null)
+  if [[ -n "$cache_data" && "$cache_data" != "null" ]]; then
+    hit=$(jq -r '.hit' <<<"$cache_data")
+    flushes=$(jq -r '.flushes' <<<"$cache_data")
+    waste=$(jq -r '.session_waste // 0' <<<"$cache_data")
+
+    if [[ "$hit" == "-1" ]]; then
+      cache_hit_fmt="${GRAY}Cache: --${RST}"
+    else
+      if   (( hit < 50 )); then hit_color="$RED";    warn="⚠"
+      elif (( hit < 90 )); then hit_color="$YELLOW"; warn=""
+      else                       hit_color="$GREEN"; warn=""
+      fi
+      cache_hit_fmt="${GRAY}Cache: ${RST}${hit_color}${warn}${hit}%${RST}"
+
+      extras=""
+      if (( flushes > 0 )); then
+        extras="${YELLOW}${flushes}f${RST}"
+      fi
+      if (( waste > 0 )); then
+        if   (( waste >= 1000000 )); then waste_fmt=$(awk "BEGIN { printf \"%.1fM\", $waste/1000000 }")
+        elif (( waste >= 1000 ));    then waste_fmt=$(awk "BEGIN { printf \"%.0fk\", $waste/1000 }")
+        else                              waste_fmt="$waste"
+        fi
+        if [[ -n "$extras" ]]; then
+          extras="${extras}${GRAY}, ${RST}${YELLOW}${waste_fmt}${RST}"
+        else
+          extras="${YELLOW}${waste_fmt}${RST}"
+        fi
+      fi
+      [[ -n "$extras" ]] && cache_hit_fmt="${cache_hit_fmt} ${GRAY}(${RST}${extras}${GRAY})${RST}"
+    fi
+  fi
+fi
+
 session_cost_usd=$(jqr '.cost.total_cost_usd // 0')
-session_cost_fmt=$(awk -v c="$session_cost_usd" 'BEGIN { printf "Cost: $%.2f", c }')
+session_cost_fmt=$(awk -v c="$session_cost_usd" 'BEGIN { printf "$%.2f", c }')
 
 cwd=$(jqr '.workspace.current_dir // .cwd // ""')
 
@@ -118,32 +202,14 @@ if [[ -n "$session_id" ]]; then
   skill_name=$(cat "$CACHE_DIR/skill-${session_id}.txt" 2>/dev/null)
 fi
 if [[ -n "$skill_name" ]]; then
-  skills_fmt="Skill: $skill_name"
+  skills_fmt="🪄 $skill_name"
 else
-  skills_fmt="Skill: -"
+  skills_fmt="🪄 -"
 fi
 
-# session-clock: aligned with ccstatusline SessionClock.ts (uses stdin cost.total_duration_ms)
-duration_ms=$(jqr '.cost.total_duration_ms // 0')
-session_clock_fmt="Session: 0m"
-if [[ -n "$duration_ms" ]] && (( duration_ms > 0 )); then
-  total_min=$(( duration_ms / 60000 ))
-  if (( total_min < 1 )); then
-    session_clock_fmt="Session: <1m"
-  else
-    h=$(( total_min / 60 ))
-    m=$(( total_min % 60 ))
-    if (( h == 0 )); then
-      session_clock_fmt="Session: ${m}m"
-    elif (( m == 0 )); then
-      session_clock_fmt="Session: ${h}hr"
-    else
-      session_clock_fmt="Session: ${h}hr ${m}m"
-    fi
-  fi
-fi
-
-line1="${runaway_prefix}${CYAN}Model: $model_name${RST} | ${GRAY}$skills_fmt${RST} | $git_branch_fmt $git_ab_fmt | ${GREEN}$session_cost_fmt${RST} | ${YELLOW}$session_clock_fmt${RST}"
+line1="${runaway_prefix}${CYAN}$model_name${RST}"
+[[ -n "$cache_hit_fmt" ]] && line1="${line1} | $cache_hit_fmt"
+line1="${line1} | ${PURPLE}$skills_fmt${RST} | $git_branch_fmt $git_ab_fmt | ${GREEN}$session_cost_fmt${RST}"
 
 # ----- Line 2: Anthropic quota + vendor balances -----
 QUOTA_CACHE_DIR="$HOME/.claude/cache"
@@ -336,7 +402,7 @@ while (( i < bar_width )); do
   fi
   i=$(( i + 1 ))
 done
-ctx_bar_fmt="Context: [${bar}] ${ctx_used_k}k/${ctx_total_k}k (${ctx_used_int}%)"
+ctx_bar_fmt="⛁ [${bar}] ${ctx_used_k}k/${ctx_total_k}k (${ctx_used_int}%)"
 
 # read daemon-written widgets
 cpu=$(cat "$CACHE_DIR/cpu.txt" 2>/dev/null || printf 'CPU: ?')

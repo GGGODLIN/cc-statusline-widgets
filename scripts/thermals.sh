@@ -67,5 +67,5 @@ fi
 if (( cpu_t_int == 0 )); then
   printf '%s🌡️ ?%s' "$GRAY" "$RST"
 else
-  printf '%s🌡️ %d°/%d°%s %s🌀 %s%s' "$temp_color" "$cpu_t_int" "$gpu_t_int" "$RST" "$fan_color" "$fan_str" "$RST"
+  printf '%s🌡️ %d°/%d°%s %s💨 %s%s' "$temp_color" "$cpu_t_int" "$gpu_t_int" "$RST" "$fan_color" "$fan_str" "$RST"
 fi
