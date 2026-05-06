@@ -132,7 +132,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
         | ($cr + $cw + $it) as $tot
         | {
             hit: (if $tot > 0 then ($cr * 100 / $tot | floor) else -1 end),
-            flushes: ([$usages[]
+            flushes: ([$usages[1:][]
               | (.cache_read_input_tokens // 0) as $r
               | (.cache_creation_input_tokens // 0) as $w
               | (.input_tokens // 0) as $i
