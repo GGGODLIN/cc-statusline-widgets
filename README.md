@@ -151,6 +151,37 @@ cat /tmp/cc-widget-cache/battery.txt
 echo '{"model":{"display_name":"Sonnet"}}' | ~/.claude/scripts/cc-statusline/wrapper.sh
 ```
 
+## Widget snapshot log
+
+Wrapper writes a 5-minute-throttled JSONL snapshot of all widget values to
+`~/.claude/projects/widget-log/YYYY-MM.jsonl`. The directory lives inside the
+`claude-session-backups` git repo, so the daily 02:00 launchd job backs it
+up automatically (append-only policy applies).
+
+**Methodology rule**: the statusline is the curation source of truth. When
+adding, removing, or renaming widgets in `wrapper.sh`, update the
+`widget-log` jq snapshot block in lockstep so the log always mirrors what's
+on screen. The whole point is "future analysis of indicators I cared about
+enough to display" — drift between screen and log destroys that signal.
+
+Schema (per JSONL line):
+`ts cwd session_id model cost cache_hit cache_flushes cache_waste ctx_pct ctx_tokens skill git_branch git_ab runaway cpu thermals free_mem disk battery line1 line2 line3`
+
+`line1/2/3` retain ANSI escapes for full statusline replay. All numeric
+fields are stored as strings — convert with `jq tonumber` when querying.
+
+Estimated growth: ~70 MB/year (96 samples/day × ~2 KB, assuming heavy CC
+use). Throttle is global across sessions; if multiple CC sessions are
+active simultaneously, only the first wrapper invocation per 5-min window
+writes a sample.
+
+Query example — daily cost trend:
+```bash
+jq -r '[.ts[:10], (.cost|tonumber)] | @tsv' \
+  ~/.claude/projects/widget-log/2026-05.jsonl \
+  | awk '{a[$1]+=$2} END {for(k in a) print k, a[k]}' | sort
+```
+
 ## Web statusline bridge
 
 For consumers that want to render the statusline outside the terminal (e.g., a sibling web-render project consuming these files via SSE):

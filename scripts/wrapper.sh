@@ -461,3 +461,46 @@ if [[ -n "$intl_uuid" ]] && [[ "$intl_uuid" =~ ^[a-fA-F0-9]{1,64}$ ]]; then
      || rm -f "$tmp_file"
 fi
 # ----- end bridge -----
+
+# ----- widget-log: 5min throttle, append-only jsonl snapshot -----
+# Records all statusline widget values for future analysis. Lives inside
+# ~/.claude/projects/ git repo (= claude-session-backups), auto-backed-up
+# daily by session-backup launchd job. Append-only policy applies.
+#
+# METHODOLOGY: statusline is the curation source of truth — when adding,
+# removing, or renaming widgets above, update this hook's schema in
+# lockstep. The log should always mirror what's currently on screen.
+WIDGET_LOG_DIR="$HOME/.claude/projects/widget-log"
+WIDGET_LOG_LAST="$CACHE_DIR/.widget-log-last-ts"
+NOW_SEC=$(date +%s)
+LAST_SEC=$(cat "$WIDGET_LOG_LAST" 2>/dev/null || echo 0)
+if (( NOW_SEC - LAST_SEC >= 300 )); then
+  printf '%s' "$NOW_SEC" > "$WIDGET_LOG_LAST"
+  mkdir -p "$WIDGET_LOG_DIR" 2>/dev/null
+  jq -nc \
+    --arg ts          "$(date -u +%FT%TZ)" \
+    --arg cwd         "$cwd" \
+    --arg session_id  "$session_id" \
+    --arg model       "$model_name" \
+    --arg cost        "$session_cost_usd" \
+    --arg cache_hit   "${hit:-}" \
+    --arg cache_flushes "${flushes:-0}" \
+    --arg cache_waste "${waste:-0}" \
+    --arg ctx_pct     "$ctx_used_pct" \
+    --arg ctx_tokens  "$ctx_used_tokens" \
+    --arg skill       "$skill_name" \
+    --arg git_branch  "$git_branch_fmt" \
+    --arg git_ab      "$git_ab_fmt" \
+    --arg runaway     "$runaway" \
+    --arg cpu         "$cpu" \
+    --arg thermals    "$thermals" \
+    --arg free_mem    "$free_mem" \
+    --arg disk        "$disk" \
+    --arg battery     "$battery" \
+    --arg line1       "$line1_full" \
+    --arg line2       "$line2_full" \
+    --arg line3       "$line3_full" \
+    '$ARGS.named' \
+    >> "$WIDGET_LOG_DIR/$(date +%Y-%m).jsonl" 2>/dev/null || true
+fi
+# ----- end widget-log -----
