@@ -535,17 +535,7 @@ if [[ -n "$usage_part" ]]; then
 fi
 
 ds_part=$(fmt_deepseek_balances "DS" 2>/dev/null || echo "")
-mimo_plan=$(fmt_vendor_plan "mimo" 2>/dev/null || echo "")
-mimo_bal=$(fmt_vendor_balance "mimo" "" 2.00 8.00 2>/dev/null || echo "")
-
 [[ -n "$ds_part" ]] && push_seg 2 "$WT_BG_VENDOR" "$ds_part"
-if [[ -n "$mimo_plan" || -n "$mimo_bal" ]]; then
-  mimo_seg="${BLUE}MiMo: ${RST}"
-  [[ -n "$mimo_plan" ]] && mimo_seg="${mimo_seg}${mimo_plan}"
-  [[ -n "$mimo_plan" && -n "$mimo_bal" ]] && mimo_seg="${mimo_seg}${BLUE} | ${RST}"
-  [[ -n "$mimo_bal" ]] && mimo_seg="${mimo_seg}${mimo_bal}"
-  push_seg 2 "$WT_BG_VENDOR" "$mimo_seg"
-fi
 
 # ----- Line 3 -----
 # context-bar
