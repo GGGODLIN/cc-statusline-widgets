@@ -18,6 +18,8 @@ cp "$REPO_ROOT/scripts/cpu-usage.sh"    "$DEST/"
 cp "$REPO_ROOT/scripts/thermals.sh"     "$DEST/"
 cp "$REPO_ROOT/scripts/skill-hook.sh"   "$DEST/"
 cp "$REPO_ROOT/scripts/runaway.sh"      "$DEST/"
+mkdir -p "$DEST/themes"
+cp "$REPO_ROOT/themes/"*.conf "$DEST/themes/"
 chmod +x "$DEST"/*.sh
 
 if ! command -v macmon >/dev/null 2>&1 || ! command -v mactop >/dev/null 2>&1; then

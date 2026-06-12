@@ -13,11 +13,145 @@ RED=$'\033[38;5;160m'
 GRAY=$'\033[38;5;243m'
 PURPLE=$'\033[38;5;141m'
 RST=$'\033[0m'
+BOLD=$'\033[1m'
+NORM=$'\033[22m'
+
+# ----- pill rendering layer (visual design adapted from Nanako0129/coralline,
+#       which is itself a tribute to romkatv/powerlevel10k) -----
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+
+WT_STYLE="pill"          # pill: powerline pills | lean: flat accent text
+WT_THEME="claude-coral"  # any file in themes/<name>.conf
+WT_LAYOUT="fixed"        # fixed: 3 semantic lines | auto: greedy wrap stream
+WT_MAX_LINES=3           # auto only
+WT_BAR_WIDTH=10
+WT_BAR_FILL="▰"
+WT_BAR_EMPTY="▱"
+
+WT_CONF="${CC_WIDGETS_CONF:-$HOME/.claude/cc-widgets-theme.conf}"
+[[ -f "$WT_CONF" ]] && . "$WT_CONF"
+
+for _td in "$SCRIPT_DIR/themes" "$SCRIPT_DIR/../themes"; do
+  if [[ -f "$_td/$WT_THEME.conf" ]]; then . "$_td/$WT_THEME.conf"; break; fi
+done
+
+VL_FG_TEXT=${VL_FG_TEXT:-231}
+VL_FG_DIM=${VL_FG_DIM:-245}
+VL_FG_OK=${VL_FG_OK:-114}
+VL_FG_WARN=${VL_FG_WARN:-179}
+VL_FG_HOT=${VL_FG_HOT:-167}
+
+# map coralline theme palette onto this wrapper's widget set
+WT_BG_MODEL=${WT_BG_MODEL:-${VL_BG_MODEL:-173}}
+WT_BG_CACHE=${WT_BG_CACHE:-${VL_BG_5H:-237}}
+WT_BG_SKILL=${WT_BG_SKILL:-${VL_BG_STYLE:-96}}
+WT_BG_GIT_OK=${WT_BG_GIT_OK:-${VL_BG_GIT_OK:-65}}
+WT_BG_GIT_DIRTY=${WT_BG_GIT_DIRTY:-${VL_BG_GIT_DIRTY:-130}}
+WT_BG_COST=${WT_BG_COST:-${VL_BG_COST:-212,125,145}}
+WT_BG_RUNAWAY=${WT_BG_RUNAWAY:-${VL_FG_HOT:-167}}
+WT_BG_USAGE=${WT_BG_USAGE:-${VL_BG_7D:-236}}
+WT_BG_VENDOR=${WT_BG_VENDOR:-${VL_BG_CLOCK:-70,80,110}}
+WT_BG_CTX=${WT_BG_CTX:-${VL_BG_CTX:-238}}
+WT_BG_SYS=${WT_BG_SYS:-${VL_BG_LINES:-240}}
+WT_BG_SYS2=${WT_BG_SYS2:-${VL_BG_DURATION:-60}}
+
+CAP_L=$(printf '\xee\x82\xb6')   # U+E0B6 left rounded cap
+CAP_R=$(printf '\xee\x82\xb4')   # U+E0B4 right rounded cap
+SEP=$(printf '\xee\x82\xb0')     # U+E0B0 powerline separator
+
+bg() {
+  [[ -n "$1" ]] || return 0
+  if [[ "${1#*,}" != "$1" ]]; then
+    local IFS=','; set -- $1; printf '\033[48;2;%s;%s;%sm' "$1" "$2" "$3"
+  else printf '\033[48;5;%sm' "$1"; fi
+}
+fg() {
+  [[ -n "$1" ]] || return 0
+  if [[ "${1#*,}" != "$1" ]]; then
+    local IFS=','; set -- $1; printf '\033[38;2;%s;%s;%sm' "$1" "$2" "$3"
+  else printf '\033[38;5;%sm' "$1"; fi
+}
+
+pct_color() {
+  local p=${1:-0}
+  if   (( p >= 75 )); then printf '%s' "$VL_FG_HOT"
+  elif (( p >= 50 )); then printf '%s' "$VL_FG_WARN"
+  else                     printf '%s' "$VL_FG_OK"; fi
+}
+
+S1_BG=() ; S1_TX=() ; S2_BG=() ; S2_TX=() ; S3_BG=() ; S3_TX=()
+push_seg() {  # $1=line-no $2=bg $3=text
+  eval "S${1}_BG[\${#S${1}_BG[@]}]=\$2 ; S${1}_TX[\${#S${1}_TX[@]}]=\$3"
+}
+
+render_range() {  # render RB/RT[$1..$2] as one row → stdout
+  local s=$1 e=$2 i out t b rebg
+  if [[ "$WT_STYLE" == "lean" ]]; then
+    out=""
+    for ((i=s; i<=e; i++)); do
+      out+="${RST}$(fg "${RB[i]}")${RT[i]}"
+      (( i < e )) && out+="${RST}  "
+    done
+    printf '%s' "${out}${RST}"
+    return 0
+  fi
+  out="${RST}$(fg "${RB[s]}")${CAP_L}"
+  for ((i=s; i<=e; i++)); do
+    b=${RB[i]} ; t=${RT[i]}
+    rebg="${RST}$(bg "$b")$(fg "$VL_FG_TEXT")"
+    t=${t//"$RST"/$rebg}
+    out+="$(bg "$b")$(fg "$VL_FG_TEXT") ${t} "
+    (( i < e )) && out+="${RST}$(bg "${RB[i+1]}")$(fg "$b")${SEP}"
+  done
+  printf '%s' "${out}${RST}$(fg "${RB[e]}")${CAP_R}${RST}"
+}
+
+render_line() {  # $1=line-no → stdout (empty if no segments)
+  eval "RB=( \${S${1}_BG[@]+\"\${S${1}_BG[@]}\"} ) ; RT=( \${S${1}_TX[@]+\"\${S${1}_TX[@]}\"} )"
+  local n=${#RB[@]}
+  (( n == 0 )) && return 0
+  render_range 0 $((n-1))
+}
+
+seg_widths() {  # NUL-separated texts on stdin → one visible width per line
+  perl -CSDA -0 -ne '
+    sub cw {
+      my $o = shift;
+      return 0 if $o == 0x200D
+                || ($o >= 0x0300 && $o <= 0x036F)
+                || ($o >= 0x200B && $o <= 0x200F)
+                || ($o >= 0xFE00 && $o <= 0xFE0F)
+                || ($o >= 0x1F3FB && $o <= 0x1F3FF);
+      return 2 if ($o >= 0x1100 && $o <= 0x115F)
+                || ($o >= 0x2E80 && $o <= 0x303E)
+                || ($o >= 0x3041 && $o <= 0x33FF)
+                || ($o >= 0x3400 && $o <= 0x4DBF)
+                || ($o >= 0x4E00 && $o <= 0x9FFF)
+                || ($o >= 0xA000 && $o <= 0xA4CF)
+                || ($o >= 0xAC00 && $o <= 0xD7A3)
+                || ($o >= 0xF900 && $o <= 0xFAFF)
+                || ($o >= 0xFE30 && $o <= 0xFE4F)
+                || ($o >= 0xFF00 && $o <= 0xFF60)
+                || ($o >= 0xFFE0 && $o <= 0xFFE6)
+                || ($o >= 0x1F300 && $o <= 0x1F9FF)
+                || ($o >= 0x20000 && $o <= 0x2FFFD)
+                || ($o >= 0x30000 && $o <= 0x3FFFD);
+      return 1;
+    }
+    chomp;
+    s/\e\[[0-9;]*[a-zA-Z]//g;
+    my $w = 0;
+    $w += cw(ord($_)) for split //;
+    print "$w\n";
+  '
+}
+# ----- end pill rendering layer -----
 
 input=$(cat)
 jqr() { jq -r "$1" <<<"$input" 2>/dev/null; }
 
 probe_cols() {
+  [[ -n "${WT_FORCE_COLS:-}" ]] && { printf '%s' "$WT_FORCE_COLS"; return; }
   local pid=$$
   local i
   for i in 1 2 3 4 5 6 7 8; do
@@ -88,8 +222,6 @@ fit_to_cols() {
 
 # Conditional widgets (read early so they can prefix line1 — most visible spot)
 runaway=$(cat "$CACHE_DIR/runaway.txt" 2>/dev/null || printf '')
-runaway_prefix=""
-[[ -n "$runaway" ]] && runaway_prefix="$runaway | "
 
 # ----- Line 1 -----
 model_name=$(jqr '.model.display_name // (if (.model | type) == "string" then .model else "?" end)')
@@ -183,14 +315,22 @@ cwd=$(jqr '.workspace.current_dir // .cwd // ""')
 
 git_branch_fmt="⎇ no git"
 git_ab_fmt="(no git)"
+git_dirty=0
 if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   branch=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "?")
-  git_branch_fmt="⎇ $branch"
+  git_marks=$(git status --porcelain 2>/dev/null | awk '
+    /^\?\?/ { u=1; next }
+    { if (substr($0,1,1) != " ") s=1; if (substr($0,2,1) != " ") m=1 }
+    END { printf "%s%s%s", (s?"+":""), (m?"!":""), (u?"?":"") }')
+  [[ -n "$git_marks" ]] && git_dirty=1
+  git_branch_fmt="⎇ ${branch}${git_marks}"
   upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
   if [[ -n "$upstream" ]]; then
     ahead=$(git rev-list --count "$upstream"..HEAD 2>/dev/null || echo 0)
     behind=$(git rev-list --count HEAD.."$upstream" 2>/dev/null || echo 0)
-    git_ab_fmt="${ahead}↑ ${behind}↓"
+    git_ab_fmt=""
+    (( ahead > 0 ))  && git_ab_fmt="⇡${ahead}"
+    (( behind > 0 )) && git_ab_fmt="${git_ab_fmt}⇣${behind}"
   else
     git_ab_fmt="(no upstream)"
   fi
@@ -207,9 +347,16 @@ else
   skills_fmt="🪄 -"
 fi
 
-line1="${runaway_prefix}${CYAN}$model_name${RST}"
-[[ -n "$cache_hit_fmt" ]] && line1="${line1} | $cache_hit_fmt"
-line1="${line1} | ${PURPLE}$skills_fmt${RST} | $git_branch_fmt $git_ab_fmt | ${GREEN}$session_cost_fmt${RST}"
+[[ -n "$runaway" ]] && push_seg 1 "$WT_BG_RUNAWAY" "$runaway"
+push_seg 1 "$WT_BG_MODEL" "${BOLD}◆ ${model_name}${NORM}"
+[[ -n "$cache_hit_fmt" ]] && push_seg 1 "$WT_BG_CACHE" "$cache_hit_fmt"
+push_seg 1 "$WT_BG_SKILL" "$skills_fmt"
+git_seg="$git_branch_fmt"
+[[ -n "$git_ab_fmt" ]] && git_seg="${git_seg} ${git_ab_fmt}"
+git_bg="$WT_BG_GIT_OK"
+(( git_dirty )) && git_bg="$WT_BG_GIT_DIRTY"
+push_seg 1 "$git_bg" "${BOLD}${git_seg}${NORM}"
+push_seg 1 "$WT_BG_COST" "$session_cost_fmt"
 
 # ----- Line 2: Anthropic quota + vendor balances -----
 QUOTA_CACHE_DIR="$HOME/.claude/cache"
@@ -309,7 +456,7 @@ fmt_deepseek_balances() {
       [[ $first -eq 1 && -n "$label" ]] && lbl="${BLUE}${label}: ${RST}"
       result="${result}${sep}${lbl}${c}${sym}${balance}${RST}"
       first=0
-    done < <(jq -r '.data.balance_infos[]? | "\(.currency)\t\(.total_balance)"' "$json" 2>/dev/null)
+    done < <(jq -r '.data.balance_infos // [] | sort_by(.currency) | .[] | "\(.currency)\t\(.total_balance)"' "$json" 2>/dev/null)
   done
   [[ -n "$result" ]] && printf '%s' "$result"
 }
@@ -351,25 +498,23 @@ fmt_vendor_plan() {
   printf '%s%s%%%s' "$c" "$pct_fmt" "$RST"
 }
 
-line2=""
+usage_part=""
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
-  line2=$("$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
+  usage_part=$("$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
 fi
+[[ -n "$usage_part" ]] && push_seg 2 "$WT_BG_USAGE" "$usage_part"
 
 ds_part=$(fmt_deepseek_balances "DS" 2>/dev/null || echo "")
 mimo_plan=$(fmt_vendor_plan "mimo" 2>/dev/null || echo "")
 mimo_bal=$(fmt_vendor_balance "mimo" "" 2.00 8.00 2>/dev/null || echo "")
 
-if [[ -n "$ds_part" ]]; then
-  [[ -n "$line2" ]] && line2="${line2}${BLUE} || ${RST}"
-  line2="${line2}${ds_part}"
-fi
+[[ -n "$ds_part" ]] && push_seg 2 "$WT_BG_VENDOR" "$ds_part"
 if [[ -n "$mimo_plan" || -n "$mimo_bal" ]]; then
-  [[ -n "$line2" ]] && line2="${line2}${BLUE} || ${RST}"
-  line2="${line2}${BLUE}MiMo: ${RST}"
-  [[ -n "$mimo_plan" ]] && line2="${line2}${mimo_plan}"
-  [[ -n "$mimo_plan" && -n "$mimo_bal" ]] && line2="${line2}${BLUE} | ${RST}"
-  [[ -n "$mimo_bal" ]] && line2="${line2}${mimo_bal}"
+  mimo_seg="${BLUE}MiMo: ${RST}"
+  [[ -n "$mimo_plan" ]] && mimo_seg="${mimo_seg}${mimo_plan}"
+  [[ -n "$mimo_plan" && -n "$mimo_bal" ]] && mimo_seg="${mimo_seg}${BLUE} | ${RST}"
+  [[ -n "$mimo_bal" ]] && mimo_seg="${mimo_seg}${mimo_bal}"
+  push_seg 2 "$WT_BG_VENDOR" "$mimo_seg"
 fi
 
 # ----- Line 3 -----
@@ -390,19 +535,20 @@ else
   ctx_total_k=0
 fi
 
-bar_width=16
-bar_filled=$(( ctx_used_int * bar_width / 100 ))
+bar_width=$WT_BAR_WIDTH
+bar_filled=$(( (ctx_used_int * bar_width + 50) / 100 ))
 (( bar_filled > bar_width )) && bar_filled=$bar_width
 (( bar_filled < 0 )) && bar_filled=0
 bar=""
 i=0
 while (( i < bar_width )); do
-  if (( i < bar_filled )); then bar="${bar}█"
-  else bar="${bar}░"
+  if (( i < bar_filled )); then bar="${bar}${WT_BAR_FILL}"
+  else bar="${bar}${WT_BAR_EMPTY}"
   fi
   i=$(( i + 1 ))
 done
 ctx_bar_fmt="⛁ [${bar}] ${ctx_used_k}k/${ctx_total_k}k (${ctx_used_int}%)"
+ctx_seg="$(fg "$(pct_color "$ctx_used_int")")⛁ ${bar} ${ctx_used_int}%${RST}$(fg "$VL_FG_DIM") ${ctx_used_k}k/${ctx_total_k}k${RST}"
 
 # read daemon-written widgets
 cpu=$(cat "$CACHE_DIR/cpu.txt" 2>/dev/null || printf 'CPU: ?')
@@ -411,9 +557,21 @@ free_mem=$(cat "$CACHE_DIR/memory.txt" 2>/dev/null || printf 'Mem: ?')
 disk=$(cat "$CACHE_DIR/disk.txt" 2>/dev/null || printf '💾 ?')
 battery=$(cat "$CACHE_DIR/battery.txt" 2>/dev/null || printf '🔋?')
 
-line3="${BLUE}$ctx_bar_fmt${RST} | $cpu | $thermals | $free_mem | $disk | $battery"
+push_seg 3 "$WT_BG_CTX"  "$ctx_seg"
+push_seg 3 "$WT_BG_SYS"  "$cpu"
+push_seg 3 "$WT_BG_SYS2" "$thermals"
+push_seg 3 "$WT_BG_SYS"  "$free_mem"
+push_seg 3 "$WT_BG_SYS2" "$disk"
+push_seg 3 "$WT_BG_SYS"  "$battery"
 
-# ----- Truncate all lines to fit terminal width -----
+# ----- Render segments and fit to terminal width -----
+line1=$(render_line 1)
+line2=$(render_line 2)
+line3=$(render_line 3)
+line1_full="$line1"
+line2_full="$line2"
+line3_full="$line3"
+
 cols=$(probe_cols)
 effective_cols=20
 if [[ -n "$cols" && "$cols" -gt 0 ]]; then
@@ -421,18 +579,45 @@ if [[ -n "$cols" && "$cols" -gt 0 ]]; then
   (( effective_cols < 20 )) && effective_cols=20
 fi
 
-line1_full="$line1"
-line2_full="$line2"
-line3_full="$line3"
-line1=$(fit_to_cols "$effective_cols" "$line1")
-[[ -n "$line2" ]] && line2=$(fit_to_cols "$effective_cols" "$line2")
-line3=$(fit_to_cols "$effective_cols" "$line3")
-
-if [[ -n "$line2" ]]; then
-  printf '%s\n%s\n%s\n' "$line1" "$line2" "$line3"
+if [[ "$WT_LAYOUT" == "auto" ]]; then
+  # merge all segments into one stream, greedy-wrap by visible width
+  RB=( ${S1_BG[@]+"${S1_BG[@]}"} ${S2_BG[@]+"${S2_BG[@]}"} ${S3_BG[@]+"${S3_BG[@]}"} )
+  RT=( ${S1_TX[@]+"${S1_TX[@]}"} ${S2_TX[@]+"${S2_TX[@]}"} ${S3_TX[@]+"${S3_TX[@]}"} )
+  total=${#RB[@]}
+  if (( total > 0 )); then
+    SEG_W=()
+    while IFS= read -r w; do
+      SEG_W[${#SEG_W[@]}]=$w
+    done < <(for t in "${RT[@]}"; do printf '%s\0' "$t"; done | seg_widths)
+    if [[ "$WT_STYLE" == "lean" ]]; then cap_w=0; sep_w=2; pad_w=0
+    else                                 cap_w=2; sep_w=1; pad_w=2; fi
+    start=0 ; nlines=1 ; cur=$(( cap_w + SEG_W[0] + pad_w ))
+    out_rows=""
+    for ((i=1; i<total; i++)); do
+      need=$(( cur + sep_w + SEG_W[i] + pad_w ))
+      if (( need > effective_cols && nlines < WT_MAX_LINES )); then
+        out_rows="${out_rows}$(render_range "$start" $((i-1)))"$'\n'
+        start=$i ; nlines=$((nlines+1)) ; cur=$(( cap_w + SEG_W[i] + pad_w ))
+      else
+        cur=$need
+      fi
+    done
+    out_rows="${out_rows}$(render_range "$start" $((total-1)))"
+    printf '%s\n' "$out_rows"
+  fi
 else
-  printf '%s\n%s\n' "$line1" "$line3"
+  line1=$(fit_to_cols "$effective_cols" "$line1")
+  [[ -n "$line2" ]] && line2=$(fit_to_cols "$effective_cols" "$line2")
+  line3=$(fit_to_cols "$effective_cols" "$line3")
+  if [[ -n "$line2" ]]; then
+    printf '%s\n%s\n%s\n' "$line1" "$line2" "$line3"
+  else
+    printf '%s\n%s\n' "$line1" "$line3"
+  fi
 fi
+
+# preview mode: skip side effects (i18n bridge + widget-log)
+[[ -n "${WT_NO_LOG:-}" ]] && exit 0
 
 # ----- cc-i18n-proxy web statusline bridge (active when uuid file present) -----
 intl_uuid=""
