@@ -50,6 +50,7 @@ WT_BG_GIT_DIRTY=${WT_BG_GIT_DIRTY:-${VL_BG_GIT_DIRTY:-130}}
 WT_BG_COST=${WT_BG_COST:-${VL_BG_COST:-212,125,145}}
 WT_BG_RUNAWAY=${WT_BG_RUNAWAY:-${VL_FG_HOT:-167}}
 WT_BG_USAGE=${WT_BG_USAGE:-${VL_BG_7D:-236}}
+WT_BG_USAGE2=${WT_BG_USAGE2:-${VL_BG_CTX:-238}}
 WT_BG_VENDOR=${WT_BG_VENDOR:-${VL_BG_CLOCK:-70,80,110}}
 WT_BG_CTX=${WT_BG_CTX:-${VL_BG_CTX:-238}}
 WT_BG_SYS=${WT_BG_SYS:-${VL_BG_LINES:-240}}
@@ -502,7 +503,36 @@ usage_part=""
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
   usage_part=$("$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
 fi
-[[ -n "$usage_part" ]] && push_seg 2 "$WT_BG_USAGE" "$usage_part"
+trim_ws() {
+  local s="$1"
+  s="${s#"${s%%[! ]*}"}"
+  s="${s%"${s##*[! ]}"}"
+  printf '%s' "$s"
+}
+if [[ -n "$usage_part" ]]; then
+  # usage-color.sh joins accounts with "||" — split into one pill per account
+  usage_rest="$usage_part"
+  usage_i=0
+  while :; do
+    if [[ "$usage_rest" == *"||"* ]]; then
+      usage_chunk="${usage_rest%%||*}"
+      usage_rest="${usage_rest#*||}"
+    else
+      usage_chunk="$usage_rest"
+      usage_rest=""
+    fi
+    usage_chunk=$(trim_ws "$usage_chunk")
+    if [[ -n "$usage_chunk" ]]; then
+      if (( usage_i % 2 == 0 )); then
+        push_seg 2 "$WT_BG_USAGE" "$usage_chunk"
+      else
+        push_seg 2 "$WT_BG_USAGE2" "$usage_chunk"
+      fi
+      usage_i=$((usage_i+1))
+    fi
+    [[ -z "$usage_rest" ]] && break
+  done
+fi
 
 ds_part=$(fmt_deepseek_balances "DS" 2>/dev/null || echo "")
 mimo_plan=$(fmt_vendor_plan "mimo" 2>/dev/null || echo "")
