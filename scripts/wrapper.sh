@@ -291,23 +291,6 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
       fi
       cache_hit_fmt="${GRAY}Cache: ${RST}${hit_color}${warn}${hit}%${RST}"
 
-      extras=""
-      if (( flushes > 0 )); then
-        extras="${YELLOW}${flushes}f${RST}"
-      fi
-      if (( waste > 0 )); then
-        if   (( waste >= 1000000 )); then waste_fmt=$(awk "BEGIN { printf \"%.1fM\", $waste/1000000 }")
-        elif (( waste >= 1000 ));    then waste_fmt=$(awk "BEGIN { printf \"%.0fk\", $waste/1000 }")
-        else                              waste_fmt="$waste"
-        fi
-        if [[ -n "$extras" ]]; then
-          extras="${extras}${GRAY}, ${RST}${YELLOW}${waste_fmt}${RST}"
-        else
-          extras="${YELLOW}${waste_fmt}${RST}"
-        fi
-      fi
-      [[ -n "$extras" ]] && cache_hit_fmt="${cache_hit_fmt} ${GRAY}(${RST}${extras}${GRAY})${RST}"
-
       idle_ts=$(jq -r '.last_ts // empty' <<<"$cache_data")
       if [[ -n "$idle_ts" ]]; then
         idle=$(( $(date +%s) - idle_ts ))
@@ -320,7 +303,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
         elif (( idle_min >= 30 )); then idle_color="$YELLOW"; idle_warn=""
         else                            idle_color="$GREEN";  idle_warn=""
         fi
-        cache_hit_fmt="${cache_hit_fmt} ${GRAY}·${RST} ${idle_color}${idle_warn}${idle_fmt}${RST}"
+        cache_hit_fmt="${cache_hit_fmt} ${idle_color}${idle_warn}${idle_fmt}${RST}"
       fi
     fi
   fi
