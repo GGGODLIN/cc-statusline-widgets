@@ -263,6 +263,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
         | ($last.cache_creation_input_tokens // 0) as $cw
         | ($last.input_tokens // 0) as $it
         | ($cr + $cw + $it) as $tot
+        | (($all | sort_by(.timestamp) | last).timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $last_ts
         | {
             hit: (if $tot > 0 then ($cr * 100 / $tot | floor) else -1 end),
             flushes: ([$usages[1:][]
@@ -271,7 +272,8 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
               | (.input_tokens // 0) as $i
               | ($r + $w + $i) as $t
               | select($t > 0 and ($r * 100 / $t) < 50)] | length),
-            session_waste: $session_waste
+            session_waste: $session_waste,
+            last_ts: $last_ts
           }
       end
   ' "$transcript_path" 2>/dev/null)
@@ -305,6 +307,21 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
         fi
       fi
       [[ -n "$extras" ]] && cache_hit_fmt="${cache_hit_fmt} ${GRAY}(${RST}${extras}${GRAY})${RST}"
+
+      idle_ts=$(jq -r '.last_ts // empty' <<<"$cache_data")
+      if [[ -n "$idle_ts" ]]; then
+        idle=$(( $(date +%s) - idle_ts ))
+        (( idle < 0 )) && idle=0
+        idle_min=$(( idle / 60 ))
+        if (( idle < 3600 )); then idle_fmt="${idle_min}m"
+        else idle_fmt="$(( idle / 3600 ))h$(( (idle % 3600) / 60 ))m"
+        fi
+        if   (( idle_min >= 50 )); then idle_color="$RED";    idle_warn="⚠ "
+        elif (( idle_min >= 30 )); then idle_color="$YELLOW"; idle_warn=""
+        else                            idle_color="$GREEN";  idle_warn=""
+        fi
+        cache_hit_fmt="${cache_hit_fmt} ${GRAY}·${RST} ${idle_color}${idle_warn}${idle_fmt}${RST}"
+      fi
     fi
   fi
 fi
@@ -691,6 +708,7 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg cache_hit   "${hit:-}" \
     --arg cache_flushes "${flushes:-0}" \
     --arg cache_waste "${waste:-0}" \
+    --arg cache_idle  "${idle:-}" \
     --arg ctx_pct     "$ctx_used_pct" \
     --arg ctx_tokens  "$ctx_used_tokens" \
     --arg skill       "$skill_name" \
