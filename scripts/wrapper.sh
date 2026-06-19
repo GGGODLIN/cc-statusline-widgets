@@ -54,6 +54,7 @@ WT_BG_USAGE=${WT_BG_USAGE:-${VL_BG_7D:-236}}
 WT_BG_USAGE2=${WT_BG_USAGE2:-${VL_BG_CTX:-238}}
 WT_BG_VENDOR=${WT_BG_VENDOR:-${VL_BG_CLOCK:-70,80,110}}
 WT_BG_GLM=${WT_BG_GLM:-${VL_BG_GLM:-99}}
+WT_BG_GLM_PEAK=${WT_BG_GLM_PEAK:-${VL_BG_GLM_PEAK:-88}}
 WT_BG_CTX=${WT_BG_CTX:-${VL_BG_CTX:-238}}
 WT_BG_SYS=${WT_BG_SYS:-${VL_BG_LINES:-240}}
 WT_BG_SYS2=${WT_BG_SYS2:-${VL_BG_DURATION:-60}}
@@ -109,7 +110,7 @@ fmt_glm_countdown() {
   fi
 }
 
-GLM_5H_PCT="" ; GLM_W_PCT="" ; GLM_LEVEL="" ; GLM_PILL_OUT=""
+GLM_5H_PCT="" ; GLM_W_PCT="" ; GLM_LEVEL="" ; GLM_PILL_OUT="" ; GLM_PILL_BG=""
 S1_BG=() ; S1_TX=() ; S2_BG=() ; S2_TX=() ; S3_BG=() ; S3_TX=()
 push_seg() {  # $1=line-no $2=bg $3=text
   eval "S${1}_BG[\${#S${1}_BG[@]}]=\$2 ; S${1}_TX[\${#S${1}_TX[@]}]=\$3"
@@ -583,10 +584,23 @@ fmt_glm_quota() {
   GLM_W_PCT="$weekly_pct"
   GLM_LEVEL="$level"
 
-  local label
-  label="$(printf '%s' "$level" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')"
+  local peak_label="GLM"
+  GLM_PILL_BG=""
+  local now_hm now_h_cn now_m_cn
+  now_hm=$(TZ=Asia/Shanghai date +"%H %M" 2>/dev/null)
+  read -r now_h_cn now_m_cn <<<"$now_hm"
+  now_h_cn=$((10#${now_h_cn:-0}))
+  now_m_cn=$((10#${now_m_cn:-0}))
+  if (( now_h_cn >= 14 && now_h_cn < 18 )); then
+    local diff_m=$(( 18*60 - now_h_cn*60 - now_m_cn ))
+    local dh=$(( diff_m / 60 )) dm=$(( diff_m % 60 ))
+    if (( dh > 0 )); then peak_label="🔥${dh}h${dm}m"
+    else                  peak_label="🔥${dm}m"
+    fi
+    GLM_PILL_BG="$WT_BG_GLM_PEAK"
+  fi
 
-  local out="${BLUE}${label}: ${RST}"
+  local out="${BLUE}${peak_label}: ${RST}"
 
   if [[ -n "$fivehr_pct" ]]; then
     local p1_int p1_color cd1
@@ -644,8 +658,9 @@ if [[ -n "$usage_part" ]]; then
 fi
 
 GLM_PILL_OUT=""
+GLM_PILL_BG=""
 fmt_glm_quota 2>/dev/null
-[[ -n "$GLM_PILL_OUT" ]] && push_seg 2 "$WT_BG_GLM" "$GLM_PILL_OUT"
+[[ -n "$GLM_PILL_OUT" ]] && push_seg 2 "${GLM_PILL_BG:-$WT_BG_GLM}" "$GLM_PILL_OUT"
 
 ds_part=$(fmt_deepseek_balances "DS" 2>/dev/null || echo "")
 [[ -n "$ds_part" ]] && push_seg 2 "$WT_BG_VENDOR" "$ds_part"
