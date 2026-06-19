@@ -10,6 +10,7 @@ BLUE=$'\033[38;5;111m'
 GREEN=$'\033[38;5;70m'
 YELLOW=$'\033[38;5;178m'
 RED=$'\033[38;5;160m'
+RED_BOLD=$'\033[1;38;5;160m'
 GRAY=$'\033[38;5;243m'
 PURPLE=$'\033[38;5;141m'
 RST=$'\033[0m'
@@ -80,6 +81,34 @@ pct_color() {
   else                     printf '%s' "$VL_FG_OK"; fi
 }
 
+quota_pct_color() {
+  local p=${1%.*}
+  : ${p:=0}
+  if   (( p >= 100 )); then printf '%s' "$RED_BOLD"
+  elif (( p >= 80 ));  then printf '%s' "$RED"
+  elif (( p >= 50 ));  then printf '%s' "$YELLOW"
+  elif (( p >= 30 ));  then printf '%s' "$BLUE"
+  else                      printf '%s' "$GREEN"
+  fi
+}
+
+fmt_glm_countdown() {
+  local reset_ms=$1
+  if [[ -z "$reset_ms" || "$reset_ms" == "null" || "$reset_ms" == "0" ]]; then
+    printf '0m'
+    return
+  fi
+  local reset_s=$(( reset_ms / 1000 ))
+  local diff_s=$(( reset_s - $(date +%s) ))
+  if (( diff_s <= 0 )); then printf '0m'; return; fi
+  local d=$(( diff_s / 86400 )) h=$(( (diff_s % 86400) / 3600 )) m=$(( (diff_s % 3600) / 60 ))
+  if (( d > 0 )); then printf '%dd%dh' "$d" "$h"
+  elif (( h > 0 )); then printf '%dh%dm' "$h" "$m"
+  else printf '%dm' "$m"
+  fi
+}
+
+GLM_5H_PCT="" ; GLM_W_PCT="" ; GLM_LEVEL=""
 S1_BG=() ; S1_TX=() ; S2_BG=() ; S2_TX=() ; S3_BG=() ; S3_TX=()
 push_seg() {  # $1=line-no $2=bg $3=text
   eval "S${1}_BG[\${#S${1}_BG[@]}]=\$2 ; S${1}_TX[\${#S${1}_TX[@]}]=\$3"
