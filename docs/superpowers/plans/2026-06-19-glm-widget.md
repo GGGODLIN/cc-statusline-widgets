@@ -268,7 +268,17 @@ Edit `native-host/quota-receiver.py:65`. Change:
 VALID_VENDORS = frozenset({'deepseek', 'mimo', 'glm'})
 ```
 
-- [ ] **Step 4: Reload extension + re-grant host_permission**
+- [ ] **Step 3.5: Deploy receiver to runtime copy**
+
+The receiver.py edit applies to the repo file at `native-host/quota-receiver.py`, but Chrome's native messaging host points to a deployed copy at `~/.claude/scripts/cc-quota-fetcher-host/quota-receiver.py`. The deployed copy must be updated or the new `'glm'` vendor will be rejected with no .json AND no .status file (the rejection happens silently before any file write).
+
+```bash
+cp native-host/quota-receiver.py ~/.claude/scripts/cc-quota-fetcher-host/quota-receiver.py
+```
+
+(Alternatively `bash install.sh` from the fetcher repo also deploys it, plus respawns the native host daemon — but the `cp` shortcut is enough since native messaging hosts are forked per chrome request and don't need a daemon restart.)
+
+- [ ] **Step 5: Reload extension + re-grant host_permission**
 
 In Chrome:
 1. `chrome://extensions` → cc-quota-fetcher → **Reload**
@@ -276,7 +286,7 @@ In Chrome:
 3. Scroll to **"Site access"** → ensure `https://api.z.ai/*` is set to **"On all sites"** OR explicitly **"Allow"** for that host
 4. If a permission prompt appears at top of chrome window asking to allow api.z.ai, click **Allow**
 
-- [ ] **Step 5: Fill the GLM key in popup**
+- [ ] **Step 6: Fill the GLM key in popup**
 
 Click cc-quota-fetcher icon → popup. Source the z.ai key from your local secrets and paste it into the GLM API Key field:
 
@@ -287,7 +297,7 @@ printf '%s\n' "$ZAI_API_KEY"
 
 Paste into the GLM field, click outside (blur to fire `change` event). Re-open popup to verify the field is non-empty.
 
-- [ ] **Step 6: Verify fetch fires — chrome console + receiver log + cache file**
+- [ ] **Step 7: Verify fetch fires — chrome console + receiver log + cache file**
 
 a. Chrome console: `chrome://extensions` → cc-quota-fetcher → **"service worker"** link → DevTools console. Within ~30s should see no exceptions; the alarm fires `tick()` which now ends with `fetchGlmQuota`.
 
@@ -321,10 +331,10 @@ cat ~/.claude/cache/vendor-glm-*.status
 
 Common failure modes:
 - `HTTP 401` → API key wrong / missing / had `Bearer ` accidentally prepended
-- `network` → host_permission not granted (re-do Step 4)
-- No file at all → checkbox not checked (re-do Step 5) or `glm_api_key` empty in storage
+- `network` → host_permission not granted (re-do Step 5)
+- No file at all → checkbox not checked (re-do Step 6) or `glm_api_key` empty in storage
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 cd ~/Desktop/projects/cc-quota-fetcher
@@ -411,28 +421,50 @@ GLM_5H_PCT="" ; GLM_W_PCT="" ; GLM_LEVEL=""
 
 - [ ] **Step 5: Quick smoke test the helpers in isolation**
 
+Uses sed-range-extract to bypass `set -uo pipefail` abort from partial source. Tests `quota_pct_color` 5-stage thresholds and `fmt_glm_countdown` edge cases.
+
 ```bash
 cd ~/Desktop/projects/cc-statusline-widgets
-bash -c 'source <(sed -n "1,90p" scripts/wrapper.sh); quota_pct_color 0; printf "GREEN\n"; quota_pct_color 50; printf "YELLOW\n"; quota_pct_color 95; printf "RED\n"; quota_pct_color 100; printf "RED_BOLD\n"'
-```
-
-Expected: four lines with ANSI escape sequences followed by the color name label. Visually each label should appear in its named color (terminal ANSI rendering).
-
-Also test countdown:
-
-```bash
-bash -c 'source <(sed -n "1,90p" scripts/wrapper.sh); fmt_glm_countdown ""; echo; fmt_glm_countdown 0; echo; fmt_glm_countdown null; echo; fmt_glm_countdown $(( ($(date +%s) + 86400 * 7) * 1000 )); echo'
+bash -c '
+  set +u
+  RED=$'"'"'\033[38;5;160m'"'"'
+  RED_BOLD=$'"'"'\033[1;38;5;160m'"'"'
+  YELLOW=$'"'"'\033[38;5;178m'"'"'
+  BLUE=$'"'"'\033[38;5;111m'"'"'
+  GREEN=$'"'"'\033[38;5;70m'"'"'
+  RST=$'"'"'\033[0m'"'"'
+  eval "$(sed -n "/^quota_pct_color() {/,/^}$/p" scripts/wrapper.sh)"
+  eval "$(sed -n "/^fmt_glm_countdown() {/,/^}$/p" scripts/wrapper.sh)"
+  for p in 0 30 50 80 100; do
+    c=$(quota_pct_color "$p")
+    case "$c" in
+      "$RED_BOLD") n=RED_BOLD;; "$RED") n=RED;; "$YELLOW") n=YELLOW;;
+      "$BLUE") n=BLUE;; "$GREEN") n=GREEN;; *) n=?;;
+    esac
+    printf "p=%-4s -> %s\n" "$p" "$n"
+  done
+  echo
+  printf "empty -> %s\n" "$(fmt_glm_countdown "")"
+  printf "null  -> %s\n" "$(fmt_glm_countdown "null")"
+  printf "0     -> %s\n" "$(fmt_glm_countdown "0")"
+  NOW_MS=$(( $(date +%s) * 1000 ))
+  printf "+7d   -> %s\n" "$(fmt_glm_countdown $(( NOW_MS + 7*86400*1000 )))"
+'
 ```
 
 Expected output:
 ```
-0m
-0m
-0m
-6d23h
-```
+p=0    -> GREEN
+p=30   -> BLUE
+p=50   -> YELLOW
+p=80   -> RED
+p=100  -> RED_BOLD
 
-(Last value might be `7d0h` if rounded exactly; either is fine — sanity check the format.)
+empty -> 0m
+null  -> 0m
+0     -> 0m
++7d   -> 7d0h
+```
 
 - [ ] **Step 6: Commit**
 
@@ -569,16 +601,24 @@ cat > /tmp/cc-glm-test/vendor-glm-deadbeef.json <<'JSON'
 ]}}
 JSON
 
-ACTIVE_PID="deadbeef" QUOTA_CACHE_DIR="/tmp/cc-glm-test" \
-  bash -c '
-    source <(sed -n "1,90p" scripts/wrapper.sh)
-    QUOTA_CACHE_DIR="/tmp/cc-glm-test"
-    ACTIVE_PID="deadbeef"
-    '"$(sed -n "/^fmt_glm_quota() {/,/^}$/p" scripts/wrapper.sh)"'
-    fmt_glm_quota
-    echo
-    echo "GLM_5H_PCT=$GLM_5H_PCT GLM_W_PCT=$GLM_W_PCT GLM_LEVEL=$GLM_LEVEL"
-  '
+bash -c '
+  set +u
+  RED=$'"'"'\033[38;5;160m'"'"'
+  RED_BOLD=$'"'"'\033[1;38;5;160m'"'"'
+  YELLOW=$'"'"'\033[38;5;178m'"'"'
+  BLUE=$'"'"'\033[38;5;111m'"'"'
+  GREEN=$'"'"'\033[38;5;70m'"'"'
+  RST=$'"'"'\033[0m'"'"'
+  QUOTA_CACHE_DIR="/tmp/cc-glm-test"
+  ACTIVE_PID="deadbeef"
+  eval "$(sed -n "/^quota_pct_color() {/,/^}$/p" scripts/wrapper.sh)"
+  eval "$(sed -n "/^fmt_glm_countdown() {/,/^}$/p" scripts/wrapper.sh)"
+  eval "$(sed -n "/^fmt_glm_quota() {/,/^}$/p" scripts/wrapper.sh)"
+  GLM_5H_PCT="" ; GLM_W_PCT="" ; GLM_LEVEL="" ; GLM_PILL_OUT=""
+  fmt_glm_quota
+  printf "%s\n" "$GLM_PILL_OUT"
+  echo "GLM_5H_PCT=$GLM_5H_PCT GLM_W_PCT=$GLM_W_PCT GLM_LEVEL=$GLM_LEVEL"
+'
 ```
 
 Expected stdout (ANSI sequences elided): `Lite: 42% 0m | 17% Nd Nh` where N depends on current time (weekly reset is 2026-06-26).

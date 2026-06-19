@@ -109,7 +109,7 @@ fmt_glm_countdown() {
   fi
 }
 
-GLM_5H_PCT="" ; GLM_W_PCT="" ; GLM_LEVEL=""
+GLM_5H_PCT="" ; GLM_W_PCT="" ; GLM_LEVEL="" ; GLM_PILL_OUT=""
 S1_BG=() ; S1_TX=() ; S2_BG=() ; S2_TX=() ; S3_BG=() ; S3_TX=()
 push_seg() {  # $1=line-no $2=bg $3=text
   eval "S${1}_BG[\${#S${1}_BG[@]}]=\$2 ; S${1}_TX[\${#S${1}_TX[@]}]=\$3"
@@ -605,7 +605,7 @@ fmt_glm_quota() {
     out="${out}${p2_color}${p2_int}%${RST}${BLUE} ${cd2}${RST}"
   fi
 
-  printf '%s' "$out"
+  GLM_PILL_OUT="$out"
 }
 
 usage_part=""
@@ -643,10 +643,9 @@ if [[ -n "$usage_part" ]]; then
   done
 fi
 
-_glm_tmp=$(mktemp)
-fmt_glm_quota >"$_glm_tmp" 2>/dev/null
-glm_part=$(cat "$_glm_tmp"); rm -f "$_glm_tmp"
-[[ -n "$glm_part" ]] && push_seg 2 "$WT_BG_GLM" "$glm_part"
+GLM_PILL_OUT=""
+fmt_glm_quota 2>/dev/null
+[[ -n "$GLM_PILL_OUT" ]] && push_seg 2 "$WT_BG_GLM" "$GLM_PILL_OUT"
 
 ds_part=$(fmt_deepseek_balances "DS" 2>/dev/null || echo "")
 [[ -n "$ds_part" ]] && push_seg 2 "$WT_BG_VENDOR" "$ds_part"
