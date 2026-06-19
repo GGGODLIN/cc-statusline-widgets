@@ -527,6 +527,85 @@ fmt_vendor_plan() {
 
   printf '%s%s%%%s' "$c" "$pct_fmt" "$RST"
 }
+fmt_glm_quota() {
+  local pid="$ACTIVE_PID"
+  if [[ -z "$pid" ]]; then
+    local first_json
+    first_json=$(ls "$QUOTA_CACHE_DIR/vendor-glm"-[0-9a-f]*.json 2>/dev/null | head -1)
+    [[ -n "$first_json" ]] && pid=$(basename "$first_json" .json | sed 's/^vendor-glm-//')
+  fi
+  [[ -z "$pid" ]] && return
+  local json="$QUOTA_CACHE_DIR/vendor-glm-${pid}.json"
+  local status="$QUOTA_CACHE_DIR/vendor-glm-${pid}.status"
+
+  if [[ -f "$status" ]]; then
+    local reason
+    reason=$(head -1 "$status" 2>/dev/null | cut -f2)
+    printf '%sGLM: %s%s' "$RED" "${reason:-err}" "$RST"
+    return
+  fi
+
+  [[ ! -f "$json" ]] && return
+
+  local parsed
+  parsed=$(jq -r '
+    .data as $d
+    | ($d.level // "glm") as $level
+    | ($d.limits // []) as $L
+    | (now * 1000) as $now_ms
+    | (
+        ([$L[] | select(.type=="TOKENS_LIMIT" and .unit==3 and .number==5)] | first)
+        // ([$L[] | select(.type=="TOKENS_LIMIT" and (.nextResetTime // null) == null)] | first)
+      ) as $h5
+    | (
+        ([$L[] | select(.type=="TOKENS_LIMIT" and .unit==6 and .number==1)] | first)
+        // ([$L[] | select(
+              .type=="TOKENS_LIMIT" and (.nextResetTime // 0) > 0
+              and ((.nextResetTime - $now_ms) > (5*86400000))
+              and ((.nextResetTime - $now_ms) < (9*86400000))
+           )] | first)
+      ) as $wk
+    | [
+        ($h5.percentage // ""),
+        ($wk.percentage // ""),
+        ($wk.nextResetTime // ""),
+        $level
+      ] | @tsv
+  ' "$json" 2>/dev/null)
+
+  local fivehr_pct weekly_pct weekly_reset level
+  IFS=$'	' read -r fivehr_pct weekly_pct weekly_reset level <<<"$parsed"
+
+  [[ -z "$fivehr_pct" && -z "$weekly_pct" ]] && return
+
+  GLM_5H_PCT="$fivehr_pct"
+  GLM_W_PCT="$weekly_pct"
+  GLM_LEVEL="$level"
+
+  local label
+  label="$(printf '%s' "$level" | awk '{print toupper(substr($0,1,1)) tolower(substr($0,2))}')"
+
+  local out="${BLUE}${label}: ${RST}"
+
+  if [[ -n "$fivehr_pct" ]]; then
+    local p1_int p1_color cd1
+    p1_int=$(awk -v p="$fivehr_pct" 'BEGIN { printf "%d", p }')
+    p1_color=$(quota_pct_color "$p1_int")
+    cd1=$(fmt_glm_countdown "")
+    out="${out}${p1_color}${p1_int}%${RST}${BLUE} ${cd1}${RST}"
+  fi
+
+  if [[ -n "$weekly_pct" ]]; then
+    local p2_int p2_color cd2
+    p2_int=$(awk -v p="$weekly_pct" 'BEGIN { printf "%d", p }')
+    p2_color=$(quota_pct_color "$p2_int")
+    cd2=$(fmt_glm_countdown "$weekly_reset")
+    [[ -n "$fivehr_pct" ]] && out="${out}${BLUE} | ${RST}"
+    out="${out}${p2_color}${p2_int}%${RST}${BLUE} ${cd2}${RST}"
+  fi
+
+  printf '%s' "$out"
+}
 
 usage_part=""
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
