@@ -53,6 +53,7 @@ WT_BG_RUNAWAY=${WT_BG_RUNAWAY:-${VL_FG_HOT:-167}}
 WT_BG_USAGE=${WT_BG_USAGE:-${VL_BG_7D:-236}}
 WT_BG_USAGE2=${WT_BG_USAGE2:-${VL_BG_CTX:-238}}
 WT_BG_VENDOR=${WT_BG_VENDOR:-${VL_BG_CLOCK:-70,80,110}}
+WT_BG_GLM=${WT_BG_GLM:-${VL_BG_GLM:-99}}
 WT_BG_CTX=${WT_BG_CTX:-${VL_BG_CTX:-238}}
 WT_BG_SYS=${WT_BG_SYS:-${VL_BG_LINES:-240}}
 WT_BG_SYS2=${WT_BG_SYS2:-${VL_BG_DURATION:-60}}
@@ -642,6 +643,11 @@ if [[ -n "$usage_part" ]]; then
   done
 fi
 
+_glm_tmp=$(mktemp)
+fmt_glm_quota >"$_glm_tmp" 2>/dev/null
+glm_part=$(cat "$_glm_tmp"); rm -f "$_glm_tmp"
+[[ -n "$glm_part" ]] && push_seg 2 "$WT_BG_GLM" "$glm_part"
+
 ds_part=$(fmt_deepseek_balances "DS" 2>/dev/null || echo "")
 [[ -n "$ds_part" ]] && push_seg 2 "$WT_BG_VENDOR" "$ds_part"
 
@@ -803,6 +809,9 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg ctx_pct     "$ctx_used_pct" \
     --arg ctx_tokens  "$ctx_used_tokens" \
     --arg skill       "$skill_name" \
+    --arg glm_level   "${GLM_LEVEL:-}" \
+    --arg glm_5h_pct  "${GLM_5H_PCT:-}" \
+    --arg glm_w_pct   "${GLM_W_PCT:-}" \
     --arg git_branch  "$git_branch_fmt" \
     --arg git_ab      "$git_ab_fmt" \
     --arg runaway     "$runaway" \
