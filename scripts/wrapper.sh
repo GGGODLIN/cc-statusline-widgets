@@ -257,6 +257,8 @@ runaway=$(cat "$CACHE_DIR/runaway.txt" 2>/dev/null || printf '')
 
 # ----- Line 1 -----
 model_name=$(jqr '.model.display_name // (if (.model | type) == "string" then .model else "?" end)')
+model_name="${model_name% (*)}"
+effort_level=$(jqr '.effort.level // ""')
 
 # cache health: last-turn hit% + session flush count + bug-induced waste
 # Algorithm and waste formula adapted from https://github.com/AlexZan/cc-cache-monitor
@@ -380,7 +382,9 @@ else
 fi
 
 [[ -n "$runaway" ]] && push_seg 1 "$WT_BG_RUNAWAY" "$runaway"
-push_seg 1 "$WT_BG_MODEL" "${BOLD}◆ ${model_name}${NORM}"
+model_pill_text="◆ ${model_name}"
+[[ -n "$effort_level" ]] && model_pill_text="${model_pill_text} (${effort_level})"
+push_seg 1 "$WT_BG_MODEL" "${BOLD}${model_pill_text}${NORM}"
 [[ -n "$cache_hit_fmt" ]] && push_seg 1 "$WT_BG_CACHE" "$cache_hit_fmt"
 push_seg 1 "$WT_BG_SKILL" "$skills_fmt"
 git_seg="$git_branch_fmt"
@@ -815,6 +819,7 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg cwd         "$cwd" \
     --arg session_id  "$session_id" \
     --arg model       "$model_name" \
+    --arg effort      "$effort_level" \
     --arg cost        "$session_cost_usd" \
     --arg cache_hit   "${hit:-}" \
     --arg cache_flushes "${flushes:-0}" \
