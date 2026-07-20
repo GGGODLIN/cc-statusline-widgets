@@ -111,6 +111,7 @@ fmt_glm_countdown() {
 }
 
 GLM_5H_PCT="" ; GLM_W_PCT="" ; GLM_LEVEL="" ; GLM_PILL_OUT="" ; GLM_PILL_BG=""
+CODEX_WEEKLY_REMAINING_PCT="" ; CODEX_WEEKLY_USED_PCT="" ; CODEX_WEEKLY_RESET_AT="" ; CODEX_PILL_OUT=""
 S1_BG=() ; S1_TX=() ; S2_BG=() ; S2_TX=() ; S3_BG=() ; S3_TX=()
 push_seg() {  # $1=line-no $2=bg $3=text
   eval "S${1}_BG[\${#S${1}_BG[@]}]=\$2 ; S${1}_TX[\${#S${1}_TX[@]}]=\$3"
@@ -453,47 +454,93 @@ fmt_vendor_balance() {
 
 fmt_deepseek_balances() {
   local label=$1
-  local result="" first=1
-  for json in "$QUOTA_CACHE_DIR/vendor-deepseek"-[0-9a-f]*.json; do
-    [[ ! -f "$json" ]] && continue
-    [[ "$json" == *-plan-* ]] && continue
-    local base="${json%.json}"
-    [[ -f "${base}.status" ]] && continue
+  local json="$QUOTA_CACHE_DIR/vendor-deepseek-local.json"
+  local status="$QUOTA_CACHE_DIR/vendor-deepseek-local.status"
+  [[ ! -f "$json" ]] && return
 
-    while IFS=$'\t' read -r currency balance; do
-      [[ -z "$balance" || "$balance" == "null" || "$balance" == "0" || "$balance" == "0.00" ]] && continue
+  local parsed
+  parsed=$(jq -er '
+    def valid_number: type == "number" and isfinite;
+    def valid_balance:
+      if type == "number" then isfinite
+      elif type == "string" then try (tonumber | isfinite) catch false
+      else false
+      end;
+    select(type == "object")
+    | .fetched_at as $fetched
+    | .data.balance_infos as $balances
+    | select(($fetched | valid_number) and (($fetched | floor) == $fetched))
+    | select(($balances | type) == "array")
+    | select(all($balances[];
+        type == "object"
+        and ((.currency | type) == "string")
+        and ((.currency | length) > 0)
+        and (.total_balance | valid_balance)
+      ))
+    | ([$fetched] | @tsv),
+      ($balances
+        | sort_by(.currency)
+        | .[]
+        | select((.total_balance | tonumber) != 0)
+        | [.currency, (.total_balance | tostring)]
+        | @tsv)
+  ' "$json" 2>/dev/null) || return
 
-      local red yellow
-      if [[ "$currency" == "CNY" ]]; then
-        red=8; yellow=30
-      else
-        red=1; yellow=4
-      fi
+  local fetched_at="${parsed%%$'\n'*}"
+  if [[ -f "$status" ]]; then
+    local status_parsed failed_at reason
+    status_parsed=$(jq -er '
+      select(type == "object")
+      | .failed_at as $failed
+      | .reason as $reason
+      | select(($failed | type) == "number" and ($failed | isfinite) and (($failed | floor) == $failed))
+      | select(($reason | type) == "string" and ($reason | test("^[a-z0-9-]+$")))
+      | [$failed, $reason]
+      | @tsv
+    ' "$status" 2>/dev/null) || return
+    IFS=$'\t' read -r failed_at reason <<<"$status_parsed"
+    (( failed_at >= fetched_at )) && return
+  fi
 
-      local color
-      color=$(awk -v b="$balance" -v r="$red" -v y="$yellow" '
-      BEGIN {
-        if (b + 0 < r) print "R"
-        else if (b + 0 < y) print "Y"
-        else                 print "G"
-      }')
+  local now_sec
+  now_sec=$(date +%s)
+  (( now_sec - fetched_at > 90 )) && return
 
-      local c sym="\$"
-      [[ "$currency" == "CNY" ]] && sym="¥"
-      case "$color" in
-        R) c="$RED" ;;
-        Y) c="$YELLOW" ;;
-        *) c="$GREEN" ;;
-      esac
+  local result="" first=1 line_no=0 currency balance
+  while IFS=$'\t' read -r currency balance; do
+    line_no=$(( line_no + 1 ))
+    (( line_no == 1 )) && continue
 
-      local sep=""
-      [[ $first -eq 0 ]] && sep="${BLUE} | ${RST}"
-      local lbl=""
-      [[ $first -eq 1 && -n "$label" ]] && lbl="${BLUE}${label}: ${RST}"
-      result="${result}${sep}${lbl}${c}${sym}${balance}${RST}"
-      first=0
-    done < <(jq -r '.data.balance_infos // [] | sort_by(.currency) | .[] | "\(.currency)\t\(.total_balance)"' "$json" 2>/dev/null)
-  done
+    local red yellow
+    if [[ "$currency" == "CNY" ]]; then
+      red=8; yellow=30
+    else
+      red=1; yellow=4
+    fi
+
+    local color
+    color=$(awk -v b="$balance" -v r="$red" -v y="$yellow" '
+    BEGIN {
+      if (b + 0 < r) print "R"
+      else if (b + 0 < y) print "Y"
+      else                 print "G"
+    }')
+
+    local c sym="\$"
+    [[ "$currency" == "CNY" ]] && sym="¥"
+    case "$color" in
+      R) c="$RED" ;;
+      Y) c="$YELLOW" ;;
+      *) c="$GREEN" ;;
+    esac
+
+    local sep=""
+    [[ $first -eq 0 ]] && sep="${BLUE} | ${RST}"
+    local lbl=""
+    [[ $first -eq 1 && -n "$label" ]] && lbl="${BLUE}${label}: ${RST}"
+    result="${result}${sep}${lbl}${c}${sym}${balance}${RST}"
+    first=0
+  done <<<"$parsed"
   [[ -n "$result" ]] && printf '%s' "$result"
 }
 
@@ -626,6 +673,104 @@ fmt_glm_quota() {
   GLM_PILL_OUT="$out"
 }
 
+fmt_codex_quota() {
+  CODEX_WEEKLY_REMAINING_PCT=""
+  CODEX_WEEKLY_USED_PCT=""
+  CODEX_WEEKLY_RESET_AT=""
+  CODEX_PILL_OUT=""
+
+  local json="$QUOTA_CACHE_DIR/vendor-codex-local.json"
+  local status="$QUOTA_CACHE_DIR/vendor-codex-local.status"
+  [[ ! -f "$json" && ! -f "$status" ]] && return
+
+  local status_parsed="" failed_at="" reason=""
+  if [[ -f "$status" ]]; then
+    status_parsed=$(jq -er '
+      select(type == "object")
+      | .failed_at as $failed
+      | .reason as $reason
+      | select(($failed | type) == "number" and ($failed | isfinite) and (($failed | floor) == $failed))
+      | select(($reason | type) == "string" and ($reason | test("^[a-z0-9-]+$")))
+      | [$failed, $reason]
+      | @tsv
+    ' "$status" 2>/dev/null) || {
+      CODEX_PILL_OUT="${RED}GPT: invalid cache${RST}"
+      printf '%s' "$CODEX_PILL_OUT"
+      return
+    }
+    IFS=$'\t' read -r failed_at reason <<<"$status_parsed"
+  fi
+
+  if [[ ! -f "$json" ]]; then
+    CODEX_PILL_OUT="${RED}GPT: ${reason}${RST}"
+    printf '%s' "$CODEX_PILL_OUT"
+    return
+  fi
+
+  local parsed fetched_at weekly_state used_pct remaining_pct reset_at
+  parsed=$(jq -er '
+    def valid_number: type == "number" and isfinite;
+    def valid_percent: valid_number and . >= 0 and . <= 100;
+    select(type == "object")
+    | .fetched_at as $fetched
+    | .data as $data
+    | select(($fetched | valid_number) and (($fetched | floor) == $fetched))
+    | select(($data | type) == "object")
+    | ($data | if has("weekly") then .weekly else null end) as $weekly
+    | if $weekly == null then
+        [$fetched, "none", "", "", ""]
+      else
+        select(($weekly | type) == "object")
+        | $weekly.used_percent as $used
+        | select($used | valid_percent)
+        | (if ($weekly | has("remaining_percent")) then $weekly.remaining_percent else 100 - $used end) as $remaining
+        | select($remaining | valid_percent)
+        | select((((($used + $remaining) - 100) | fabs) <= 0.000001))
+        | (if ($weekly | has("reset_at")) then $weekly.reset_at else null end) as $reset
+        | select($reset == null or (($reset | valid_number) and (($reset | floor) == $reset) and $reset > 0))
+        | [$fetched, "weekly", $used, $remaining, (if $reset == null then "" else $reset end)]
+      end
+    | @tsv
+  ' "$json" 2>/dev/null) || {
+    CODEX_PILL_OUT="${RED}GPT: invalid cache${RST}"
+    printf '%s' "$CODEX_PILL_OUT"
+    return
+  }
+  IFS=$'\t' read -r fetched_at weekly_state used_pct remaining_pct reset_at <<<"$parsed"
+
+  if [[ -n "$failed_at" ]] && (( failed_at >= fetched_at )); then
+    CODEX_PILL_OUT="${RED}GPT: ${reason}${RST}"
+    printf '%s' "$CODEX_PILL_OUT"
+    return
+  fi
+
+  [[ "$weekly_state" == "none" ]] && return
+
+  local now_sec
+  now_sec=$(date +%s)
+  if (( now_sec - fetched_at > 90 )); then
+    CODEX_PILL_OUT="${RED}GPT: stale${RST}"
+    printf '%s' "$CODEX_PILL_OUT"
+    return
+  fi
+
+  CODEX_WEEKLY_REMAINING_PCT="$remaining_pct"
+  CODEX_WEEKLY_USED_PCT="$used_pct"
+  CODEX_WEEKLY_RESET_AT="$reset_at"
+
+  local color
+  color=$(quota_pct_color "$used_pct")
+  if [[ -n "$reset_at" ]]; then
+    local countdown reset_ms
+    reset_ms=$(( reset_at * 1000 ))
+    countdown=$(fmt_glm_countdown "$reset_ms")
+    CODEX_PILL_OUT="${BLUE}GPT: ${RST}${color}${remaining_pct}%${RST}${BLUE} · ${countdown}${RST}"
+  else
+    CODEX_PILL_OUT="${BLUE}GPT: ${RST}${color}${remaining_pct}%${RST}"
+  fi
+  printf '%s' "$CODEX_PILL_OUT"
+}
+
 usage_part=""
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
   usage_part=$("$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
@@ -660,6 +805,9 @@ if [[ -n "$usage_part" ]]; then
     [[ -z "$usage_rest" ]] && break
   done
 fi
+
+fmt_codex_quota >/dev/null 2>&1 || true
+[[ -n "$CODEX_PILL_OUT" ]] && push_seg 2 "$WT_BG_VENDOR" "$CODEX_PILL_OUT"
 
 ds_part=$(fmt_deepseek_balances "DS" 2>/dev/null || echo "")
 [[ -n "$ds_part" ]] && push_seg 2 "$WT_BG_VENDOR" "$ds_part"
@@ -816,6 +964,9 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg model       "$model_name" \
     --arg effort      "$effort_level" \
     --arg cost        "$session_cost_usd" \
+    --arg codex_weekly_remaining_pct "$CODEX_WEEKLY_REMAINING_PCT" \
+    --arg codex_weekly_used_pct "$CODEX_WEEKLY_USED_PCT" \
+    --arg codex_weekly_reset_at "$CODEX_WEEKLY_RESET_AT" \
     --arg cache_hit   "${hit:-}" \
     --arg cache_flushes "${flushes:-0}" \
     --arg cache_waste "${waste:-0}" \
