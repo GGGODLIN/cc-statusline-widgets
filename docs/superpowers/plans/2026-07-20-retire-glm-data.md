@@ -219,7 +219,7 @@ Expected: 仍可看到 formatter、helper、變數與樣式；看不到 `fmt_glm
 Run:
 
 ```bash
-rm -f ~/.claude/cache/cc-statusline/.widget-log-last-ts
+printf '0' > /tmp/cc-widget-cache/.widget-log-last-ts
 printf '%s' '{"workspace":{"current_dir":"/Users/linhancheng/Desktop/projects/cc-statusline-widgets"},"model":{"display_name":"Claude"},"session_id":"glm-retirement-log-check"}' | bash ~/.claude/scripts/cc-statusline/wrapper.sh >/tmp/cc-statusline-glm-retirement-log.out
 ```
 
@@ -231,8 +231,7 @@ Run:
 
 ```bash
 LATEST_LOG="$HOME/.claude/projects/widget-log/$(date +%Y-%m).jsonl"
-LATEST_LINE=$(tail -n 1 "$LATEST_LOG")
-printf '%s' "$LATEST_LINE" | jq -e 'has("glm_level") or has("glm_5h_pct") or has("glm_w_pct") | not'
+jq -se 'last | (has("glm_level") or has("glm_5h_pct") or has("glm_w_pct")) | not' "$LATEST_LOG"
 ```
 
 Expected: jq 輸出 `true` 且 exit 0。
