@@ -360,6 +360,15 @@ class WrapperQuotaContractTests(unittest.TestCase):
     self.assertLess(output.index("GPT:"), output.index("DS:"))
     self.assertNotIn("GLM:", output)
 
+  def test_gpt_and_deepseek_use_distinct_backgrounds(self):
+    source = WRAPPER.read_text()
+
+    self.assertIn('WT_BG_VENDOR_LEGACY=${WT_BG_VENDOR:-}', source)
+    self.assertIn('WT_BG_CODEX=${WT_BG_CODEX:-${WT_BG_VENDOR_LEGACY:-${VL_BG_STYLE:-96}}}', source)
+    self.assertIn('WT_BG_DEEPSEEK=${WT_BG_DEEPSEEK:-${WT_BG_VENDOR_LEGACY:-${VL_BG_CLOCK:-70,80,110}}}', source)
+    self.assertIn('push_seg 2 "$WT_BG_CODEX" "$CODEX_PILL_OUT"', source)
+    self.assertIn('push_seg 2 "$WT_BG_DEEPSEEK" "$ds_part"', source)
+
   def test_widget_log_has_exact_codex_fields_and_null_reset_values(self):
     self.write_json("vendor-codex-local.json", self.codex_cache(
       used=25,

@@ -52,7 +52,10 @@ WT_BG_COST=${WT_BG_COST:-${VL_BG_COST:-212,125,145}}
 WT_BG_RUNAWAY=${WT_BG_RUNAWAY:-${VL_FG_HOT:-167}}
 WT_BG_USAGE=${WT_BG_USAGE:-${VL_BG_7D:-236}}
 WT_BG_USAGE2=${WT_BG_USAGE2:-${VL_BG_CTX:-238}}
+WT_BG_VENDOR_LEGACY=${WT_BG_VENDOR:-}
 WT_BG_VENDOR=${WT_BG_VENDOR:-${VL_BG_CLOCK:-70,80,110}}
+WT_BG_CODEX=${WT_BG_CODEX:-${WT_BG_VENDOR_LEGACY:-${VL_BG_STYLE:-96}}}
+WT_BG_DEEPSEEK=${WT_BG_DEEPSEEK:-${WT_BG_VENDOR_LEGACY:-${VL_BG_CLOCK:-70,80,110}}}
 WT_BG_GLM=${WT_BG_GLM:-${VL_BG_GLM:-99}}
 WT_BG_GLM_PEAK=${WT_BG_GLM_PEAK:-${VL_BG_GLM_PEAK:-88}}
 WT_BG_CTX=${WT_BG_CTX:-${VL_BG_CTX:-238}}
@@ -807,10 +810,10 @@ if [[ -n "$usage_part" ]]; then
 fi
 
 fmt_codex_quota >/dev/null 2>&1 || true
-[[ -n "$CODEX_PILL_OUT" ]] && push_seg 2 "$WT_BG_VENDOR" "$CODEX_PILL_OUT"
+[[ -n "$CODEX_PILL_OUT" ]] && push_seg 2 "$WT_BG_CODEX" "$CODEX_PILL_OUT"
 
 ds_part=$(fmt_deepseek_balances "DS" 2>/dev/null || echo "")
-[[ -n "$ds_part" ]] && push_seg 2 "$WT_BG_VENDOR" "$ds_part"
+[[ -n "$ds_part" ]] && push_seg 2 "$WT_BG_DEEPSEEK" "$ds_part"
 
 # ----- Line 3 -----
 # context-bar
