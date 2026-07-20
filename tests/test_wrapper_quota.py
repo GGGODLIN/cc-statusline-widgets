@@ -111,8 +111,8 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     output = self.run_wrapper()
 
-    self.assertIn("GPT: 80% · ", output)
-    self.assertNotIn("GPT: 1%", output)
+    self.assertIn("GPT: 20% · ", output)
+    self.assertNotIn("GPT: 99%", output)
     self.assertNotIn("legacy-error", output)
 
   def test_codex_null_reset_derives_remaining_and_omits_countdown(self):
@@ -127,8 +127,8 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     output = self.run_wrapper()
 
-    self.assertIn("GPT: 75%", output)
-    self.assertNotIn("GPT: 75% ·", output)
+    self.assertIn("GPT: 25%", output)
+    self.assertNotIn("GPT: 25% ·", output)
 
   def test_codex_missing_reset_derives_remaining_and_omits_countdown(self):
     payload = self.codex_cache(used=25, include_remaining=False)
@@ -137,8 +137,8 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     output = self.run_wrapper()
 
-    self.assertIn("GPT: 75%", output)
-    self.assertNotIn("GPT: 75% ·", output)
+    self.assertIn("GPT: 25%", output)
+    self.assertNotIn("GPT: 25% ·", output)
 
   def test_codex_rejects_malformed_non_null_reset_times(self):
     for reset_at in [False, "soon", {}, []]:
@@ -156,7 +156,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
     output = self.run_wrapper()
 
     self.assertIn("GPT: rate-limited", output)
-    self.assertNotIn("GPT: 80%", output)
+    self.assertNotIn("GPT: 20%", output)
 
   def test_codex_equal_timestamp_status_overrides_cache(self):
     self.write_json("vendor-codex-local.json", self.codex_cache(fetched_at=self.now))
@@ -165,7 +165,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
     output = self.run_wrapper()
 
     self.assertIn("GPT: rate-limited", output)
-    self.assertNotIn("GPT: 80%", output)
+    self.assertNotIn("GPT: 20%", output)
 
   def test_codex_older_status_is_ignored(self):
     self.write_json("vendor-codex-local.json", self.codex_cache(fetched_at=self.now))
@@ -173,7 +173,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     output = self.run_wrapper()
 
-    self.assertIn("GPT: 80% · ", output)
+    self.assertIn("GPT: 20% · ", output)
     self.assertNotIn("old-error", output)
 
   def test_codex_stale_cache_shows_stale(self):
@@ -182,7 +182,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
     output = self.run_wrapper()
 
     self.assertIn("GPT: stale", output)
-    self.assertNotIn("GPT: 80%", output)
+    self.assertNotIn("GPT: 20%", output)
 
   def test_codex_invalid_json_shows_invalid_cache(self):
     self.write_raw("vendor-codex-local.json", "{")

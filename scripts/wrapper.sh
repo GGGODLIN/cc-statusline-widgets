@@ -767,9 +767,9 @@ fmt_codex_quota() {
     local countdown reset_ms
     reset_ms=$(( reset_at * 1000 ))
     countdown=$(fmt_glm_countdown "$reset_ms")
-    CODEX_PILL_OUT="${BLUE}GPT: ${RST}${color}${remaining_pct}%${RST}${BLUE} · ${countdown}${RST}"
+    CODEX_PILL_OUT="${BLUE}GPT: ${RST}${color}${used_pct}%${RST}${BLUE} · ${countdown}${RST}"
   else
-    CODEX_PILL_OUT="${BLUE}GPT: ${RST}${color}${remaining_pct}%${RST}"
+    CODEX_PILL_OUT="${BLUE}GPT: ${RST}${color}${used_pct}%${RST}"
   fi
   printf '%s' "$CODEX_PILL_OUT"
 }
