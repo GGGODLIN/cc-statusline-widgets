@@ -242,7 +242,7 @@ Run:
 
 ```bash
 git status --short
-git log -2 --oneline
+git log -3 --oneline
 ```
 
-Expected: tracked 工作目錄乾淨；最近兩筆 commit 包含設計規格與 GLM 實作。
+Expected: tracked 工作目錄乾淨；最近三筆 commit 依序包含驗證計畫修正、GLM 實作與設計規格。
