@@ -661,11 +661,6 @@ if [[ -n "$usage_part" ]]; then
   done
 fi
 
-GLM_PILL_OUT=""
-GLM_PILL_BG=""
-fmt_glm_quota 2>/dev/null
-[[ -n "$GLM_PILL_OUT" ]] && push_seg 2 "${GLM_PILL_BG:-$WT_BG_GLM}" "$GLM_PILL_OUT"
-
 ds_part=$(fmt_deepseek_balances "DS" 2>/dev/null || echo "")
 [[ -n "$ds_part" ]] && push_seg 2 "$WT_BG_VENDOR" "$ds_part"
 
@@ -828,9 +823,6 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg ctx_pct     "$ctx_used_pct" \
     --arg ctx_tokens  "$ctx_used_tokens" \
     --arg skill       "$skill_name" \
-    --arg glm_level   "${GLM_LEVEL:-}" \
-    --arg glm_5h_pct  "${GLM_5H_PCT:-}" \
-    --arg glm_w_pct   "${GLM_W_PCT:-}" \
     --arg git_branch  "$git_branch_fmt" \
     --arg git_ab      "$git_ab_fmt" \
     --arg runaway     "$runaway" \
