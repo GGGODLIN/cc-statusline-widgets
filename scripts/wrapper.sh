@@ -56,6 +56,7 @@ WT_BG_VENDOR_LEGACY=${WT_BG_VENDOR:-}
 WT_BG_VENDOR=${WT_BG_VENDOR:-${VL_BG_CLOCK:-70,80,110}}
 WT_BG_CODEX=${WT_BG_CODEX:-${WT_BG_VENDOR_LEGACY:-${VL_BG_STYLE:-96}}}
 WT_BG_DEEPSEEK=${WT_BG_DEEPSEEK:-${WT_BG_VENDOR_LEGACY:-${VL_BG_CLOCK:-70,80,110}}}
+WT_BG_DS_PEAK=${WT_BG_DS_PEAK:-${VL_BG_DS_PEAK:-88}}
 WT_BG_GLM=${WT_BG_GLM:-${VL_BG_GLM:-99}}
 WT_BG_GLM_PEAK=${WT_BG_GLM_PEAK:-${VL_BG_GLM_PEAK:-88}}
 WT_BG_CTX=${WT_BG_CTX:-${VL_BG_CTX:-238}}
@@ -455,6 +456,23 @@ fmt_vendor_balance() {
   printf '%s%s%s%s%s' "$sep" "$c" "$sym" "$balance" "$RST"
 }
 
+ds_peak_state() {
+  local now_hm now_h_cn now_m_cn peak_end
+  now_hm=$(TZ=Asia/Shanghai date +"%H %M" 2>/dev/null)
+  read -r now_h_cn now_m_cn <<<"$now_hm"
+  now_h_cn=$((10#${now_h_cn:-0}))
+  now_m_cn=$((10#${now_m_cn:-0}))
+  if   (( now_h_cn >= 9 && now_h_cn < 12 )); then peak_end=12
+  elif (( now_h_cn >= 14 && now_h_cn < 18 )); then peak_end=18
+  fi
+  [[ -z "$peak_end" ]] && return
+  local diff_m=$(( peak_end*60 - now_h_cn*60 - now_m_cn ))
+  local dh=$(( diff_m / 60 )) dm=$(( diff_m % 60 ))
+  if (( dh > 0 )); then printf '%s' "${dh}h${dm}m"
+  else                  printf '%s' "${dm}m"
+  fi
+}
+
 fmt_deepseek_balances() {
   local label=$1
   local json="$QUOTA_CACHE_DIR/vendor-deepseek-local.json"
@@ -514,6 +532,8 @@ fmt_deepseek_balances() {
     line_no=$(( line_no + 1 ))
     (( line_no == 1 )) && continue
 
+    [[ "$currency" == "CNY" ]] || continue
+
     local red yellow
     if [[ "$currency" == "CNY" ]]; then
       red=8; yellow=30
@@ -544,6 +564,10 @@ fmt_deepseek_balances() {
     result="${result}${sep}${lbl}${c}${sym}${balance}${RST}"
     first=0
   done <<<"$parsed"
+  local cd
+  cd=$(ds_peak_state)
+  [[ -n "$cd" ]] && result="${result}${BLUE} 🔥${cd}${RST}"
+
   [[ -n "$result" ]] && printf '%s' "$result"
 }
 
@@ -813,7 +837,9 @@ fmt_codex_quota >/dev/null 2>&1 || true
 [[ -n "$CODEX_PILL_OUT" ]] && push_seg 2 "$WT_BG_CODEX" "$CODEX_PILL_OUT"
 
 ds_part=$(fmt_deepseek_balances "DS" 2>/dev/null || echo "")
-[[ -n "$ds_part" ]] && push_seg 2 "$WT_BG_DEEPSEEK" "$ds_part"
+ds_bg=$WT_BG_DEEPSEEK
+[[ -n "$(ds_peak_state)" ]] && ds_bg=$WT_BG_DS_PEAK
+[[ -n "$ds_part" ]] && push_seg 2 "$ds_bg" "$ds_part"
 
 # ----- Line 3 -----
 # context-bar
