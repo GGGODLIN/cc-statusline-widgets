@@ -282,6 +282,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     ([.[] | select(.message.usage and .timestamp)]
       | group_by(.message.id // .timestamp) | map(first)
       | sort_by(.timestamp)) as $all
+    | ([.[] | select(.type == "system" and (.subtype // "") == "compact_boundary")] | length) as $compactions
     | [$all[] | .message.usage] as $usages
     | [$all[]
         | .message.usage as $u
@@ -321,6 +322,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
               | ($r + $w + $i) as $t
               | select($t > 0 and ($r * 100 / $t) < 50)] | length),
             session_waste: $session_waste,
+            compactions: $compactions,
             last_ts: $last_ts
           }
       end
@@ -358,6 +360,10 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
         else                            idle_color="$GREEN";  idle_warn=""
         fi
         cache_hit_fmt="${cache_hit_fmt} ${idle_color}${idle_warn}${idle_fmt}${RST}"
+      fi
+      compactions=$(jq -r '.compactions // 0' <<<"$cache_data")
+      if (( compactions > 0 )); then
+        cache_hit_fmt="${cache_hit_fmt} ${GRAY}⧉${compactions}${RST}"
       fi
     fi
   fi
@@ -1016,6 +1022,7 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg cache_flushes "${flushes:-0}" \
     --arg cache_waste "${waste:-0}" \
     --arg cache_idle  "${idle:-}" \
+    --arg cache_compactions "${compactions:-0}" \
     --arg ctx_pct     "$ctx_used_pct" \
     --arg ctx_tokens  "$ctx_used_tokens" \
     --arg skill       "$skill_name" \
