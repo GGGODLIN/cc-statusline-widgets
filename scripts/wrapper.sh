@@ -270,8 +270,18 @@ effort_level=$(jqr '.effort.level // ""')
 cache_hit_fmt=""
 transcript_path=$(jqr '.transcript_path // ""')
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-  cache_data=$(jq -s '
-    [.[] | select(.message.usage and .timestamp)] as $all
+  t_stat=$(stat -f '%m %z' "$transcript_path" 2>/dev/null)
+  cache_memo="$CACHE_DIR/cache-widget-${transcript_path##*/}.memo"
+  cache_data=""
+  if [[ -n "$t_stat" && -f "$cache_memo" ]]; then
+    { read -r memo_stat; read -r memo_data; } < "$cache_memo"
+    [[ "$memo_stat" == "$t_stat" ]] && cache_data="$memo_data"
+  fi
+  if [[ -z "$cache_data" ]]; then
+  cache_data=$(jq -sc '
+    ([.[] | select(.message.usage and .timestamp)]
+      | group_by(.message.id // .timestamp) | map(first)
+      | sort_by(.timestamp)) as $all
     | [$all[] | .message.usage] as $usages
     | [$all[]
         | .message.usage as $u
@@ -315,6 +325,12 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
           }
       end
   ' "$transcript_path" 2>/dev/null)
+  if [[ -n "$t_stat" && -n "$cache_data" && -d "$CACHE_DIR" ]]; then
+    memo_tmp=$(mktemp "$CACHE_DIR/.cache-widget.XXXXXX" 2>/dev/null) &&
+      printf '%s\n%s\n' "$t_stat" "$cache_data" > "$memo_tmp" &&
+      mv "$memo_tmp" "$cache_memo"
+  fi
+  fi
   if [[ -n "$cache_data" && "$cache_data" != "null" ]]; then
     hit=$(jq -r '.hit' <<<"$cache_data")
     flushes=$(jq -r '.flushes' <<<"$cache_data")
