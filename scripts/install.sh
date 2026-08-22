@@ -18,6 +18,7 @@ cp "$REPO_ROOT/scripts/cpu-usage.sh"    "$DEST/"
 cp "$REPO_ROOT/scripts/thermals.sh"     "$DEST/"
 cp "$REPO_ROOT/scripts/skill-hook.sh"   "$DEST/"
 cp "$REPO_ROOT/scripts/runaway.sh"      "$DEST/"
+install -m 755 "$REPO_ROOT/scripts/usage-color.sh" "$HOME/.claude/scripts/usage-color.sh"
 mkdir -p "$DEST/themes"
 cp "$REPO_ROOT/themes/"*.conf "$DEST/themes/"
 chmod +x "$DEST"/*.sh
@@ -33,6 +34,7 @@ launchctl bootout "gui/$(id -u)" "$PLIST_DEST" 2>/dev/null || true
 launchctl bootstrap "gui/$(id -u)" "$PLIST_DEST"
 
 echo "Installed scripts to $DEST"
+echo "Installed usage-color.sh to $HOME/.claude/scripts/ (wrapper.sh reads it from there)"
 echo "Daemon started (com.user.cc-statusline-daemon)"
 echo
 echo "Next: ~/.claude/settings.json statusLine.command should be:"

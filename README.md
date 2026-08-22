@@ -57,6 +57,21 @@ bash scripts/install.sh
    5. 拼接 3 行 ANSI 輸出
 ```
 
+## usage-color.sh 的新鮮度門檻
+
+`scripts/usage-color.sh` 是 Line 2 的 quota pill renderer。它不部署到 `$DEST`，而是 `~/.claude/scripts/usage-color.sh`——`wrapper.sh` 從那裡讀。`install.sh` 已含這一步。
+
+pill 上的 `[N old]` / `[⚠ N stale]` 是拿 cache 檔 mtime 算的，門檻兩個常數，可用同名環境變數覆寫：
+
+| 常數 | 預設 | 意義 |
+|---|---|---|
+| `OLD_AFTER_SECONDS` | 400 | 黃字 `[N old]` |
+| `STALE_AFTER_SECONDS` | 600 | 紅字 `[⚠ N stale]` |
+
+門檻必須對齊**最慢的 writer**。目前兩個 writer 寫同一批 `quota-<email>.json`：Chrome 外掛 30 秒一輪，`cc-quota-fetcher` 的 `anthropic_quota_poller` 180 秒一輪。400 秒 = 慢的那個連續漏兩輪才提醒。
+
+舊值是 90 秒，那是只有 30 秒外掛時定的。poller 改成 180 秒後，90 秒門檻會讓 pill 在每個輪詢週期有一半時間掛著 `[2m old]`，而那半段其實一切正常——警告失去資訊量。**動任一 poller 的輪詢間隔時，這兩個門檻要一起調。**
+
 ## Phase 3 實作驗收
 
 | Widget | 來源 | 狀態 |
