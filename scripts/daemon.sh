@@ -33,6 +33,8 @@ print(json.dumps({'display': sys.argv[1], 'ts': int(sys.argv[2])}))
     && mv "$CACHE_DIR/$name.json.tmp.$$" "$CACHE_DIR/$name.json"
 }
 
+BG_PIDS=()
+
 # Background mactop loop: feeds fan RPM cache for thermals widget.
 # mactop has ~5s cold start, so we run it isolated from the main per-widget loop.
 if command -v mactop >/dev/null 2>&1; then
@@ -46,8 +48,29 @@ if command -v mactop >/dev/null 2>&1; then
       sleep 30
     done
   ) &
-  MACTOP_BG_PID=$!
-  trap 'kill "$MACTOP_BG_PID" 2>/dev/null' EXIT INT TERM
+  BG_PIDS+=($!)
+fi
+
+# Background macmon stream: feeds CPU/GPU temp cache for thermals widget.
+# Long-lived `-s 0 -i 5000` avoids the spawn + 200ms busy-poll cost per refresh.
+# Outer `while true` is a watchdog: if macmon dies the pipe closes, inner loop
+# exits, and we respawn after 5s — otherwise the cache would silently freeze.
+if command -v macmon >/dev/null 2>&1; then
+  (
+    while true; do
+      macmon pipe -s 0 -i 5000 2>/dev/null | while IFS= read -r line; do
+        [[ -z "$line" ]] && continue
+        printf '%s' "$line" > "$CACHE_DIR/.macmon-temp.json.tmp" \
+          && mv "$CACHE_DIR/.macmon-temp.json.tmp" "$CACHE_DIR/.macmon-temp.json"
+      done
+      sleep 5
+    done
+  ) &
+  BG_PIDS+=($!)
+fi
+
+if (( ${#BG_PIDS[@]} > 0 )); then
+  trap 'kill "${BG_PIDS[@]}" 2>/dev/null' EXIT INT TERM
 fi
 
 while true; do

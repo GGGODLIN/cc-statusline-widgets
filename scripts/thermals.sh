@@ -6,6 +6,8 @@ set -uo pipefail
 
 CACHE_DIR=/tmp/cc-widget-cache
 FAN_CACHE="$CACHE_DIR/.mactop-fan.json"
+TEMP_CACHE="$CACHE_DIR/.macmon-temp.json"
+TEMP_CACHE_TTL=30
 
 GREEN=$'\033[38;5;70m'
 BLUE=$'\033[38;5;111m'
@@ -15,7 +17,16 @@ RED_BOLD=$'\033[1;38;5;160m'
 GRAY=$'\033[38;5;243m'
 RST=$'\033[0m'
 
-json=$(macmon pipe -s 1 -i 200 2>/dev/null || true)
+json=""
+if [[ -f "$TEMP_CACHE" ]]; then
+  cache_age=$(( $(date +%s) - $(stat -f %m "$TEMP_CACHE" 2>/dev/null || echo 0) ))
+  if (( cache_age <= TEMP_CACHE_TTL )); then
+    json=$(cat "$TEMP_CACHE" 2>/dev/null || true)
+  fi
+fi
+if [[ -z "$json" ]]; then
+  json=$(macmon pipe -s 1 -i 100 2>/dev/null || true)
+fi
 cpu_t=$(jq -r '.temp.cpu_temp_avg // 0' <<<"$json" 2>/dev/null || echo 0)
 gpu_t=$(jq -r '.temp.gpu_temp_avg // 0' <<<"$json" 2>/dev/null || echo 0)
 cpu_t_int=$(awk -v t="$cpu_t" 'BEGIN { printf "%d", t }')

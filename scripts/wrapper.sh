@@ -4,6 +4,7 @@
 set -uo pipefail
 
 CACHE_DIR=/tmp/cc-widget-cache
+mkdir -p "$CACHE_DIR" 2>/dev/null
 
 CYAN=$'\033[38;5;30m'
 BLUE=$'\033[38;5;111m'
@@ -263,6 +264,7 @@ runaway=$(cat "$CACHE_DIR/runaway.txt" 2>/dev/null || printf '')
 # ----- Line 1 -----
 model_name=$(jqr '.model.display_name // (if (.model | type) == "string" then .model else "?" end)')
 model_name="${model_name% (*)}"
+model_id=$(jqr '.model.id // (if (.model | type) == "string" then .model else "" end)')
 effort_level=$(jqr '.effort.level // ""')
 
 # cache health: last-turn hit% + session flush count + bug-induced waste
@@ -401,6 +403,7 @@ session_id=$(jqr '.session_id // ""')
 skill_name=""
 if [[ -n "$session_id" ]]; then
   skill_name=$(cat "$CACHE_DIR/skill-${session_id}.txt" 2>/dev/null)
+  [[ -n "$model_id" && "$model_id" != "?" && "$model_id" != "<synthetic>" ]] && printf '%s' "$model_id" > "$CACHE_DIR/model-${session_id}.txt" 2>/dev/null
 fi
 if [[ -n "$skill_name" ]]; then
   skills_fmt="🪄 $skill_name"
