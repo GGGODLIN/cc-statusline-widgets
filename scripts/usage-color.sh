@@ -14,7 +14,7 @@ STALE_AFTER_SECONDS=${STALE_AFTER_SECONDS:-600}
 
 # 已結束的帳號：cache 仍可能被 fetcher 寫入，但不再渲染 pill。
 # 格式 |email|email|，移除某行即恢復顯示。
-EXCLUDE_EMAILS="|philip@akohub.com|qwe70301@gmail.com|"
+EXCLUDE_EMAILS="|philip@akohub.com|qwe70301@gmail.com|philiplin@calyxtechs.com|"
 
 color_for() {
   local v=${1%.*}
@@ -29,7 +29,8 @@ color_for() {
 fmt_name() {
   local prefix="${1%@*}"
   case "$prefix" in
-    alex.robin) printf 'Max' ;;
+    alex.robin)     printf 'Max' ;;
+    software.agent) printf 'Team' ;;
     *)          printf '%s' "$prefix" ;;
   esac
 }
