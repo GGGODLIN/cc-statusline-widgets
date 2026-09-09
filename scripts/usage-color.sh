@@ -29,8 +29,8 @@ color_for() {
 fmt_name() {
   local prefix="${1%@*}"
   case "$prefix" in
-    philiplin)      printf 'P' ;;
-    software.agent) printf 'S' ;;
+    philiplin)      printf 'Team-P' ;;
+    software.agent) printf 'Team-S' ;;
     alex.robin)     printf 'Max' ;;
     *)          printf '%s' "$prefix" ;;
   esac
@@ -63,7 +63,7 @@ fmt_age() {
 }
 
 render_segment() {
-  local email="$1" cache="$2" compact="${3:-}"
+  local email="$1" cache="$2"
   local status="${cache%.json}.status"
 
   # 有 cache 就畫數字，最後一次 fetch 失敗只降級成帳號名旁的 ⚠ 標記。
@@ -93,7 +93,7 @@ render_segment() {
   weekly_part=$(printf '%s%s%%%s' "$wc" "$wu_fmt" "$RST")
   if [[ -n "$fu" ]]; then
     fu_fmt=$(printf '%.0f' "$fu")
-    if (( fu_fmt != wu_fmt )) && (( wu_fmt < 100 || fu_fmt < 100 )); then
+    if (( wu_fmt < 100 || fu_fmt < 100 )); then
       weekly_part+=$(printf '%s · %s%s%%%s' "$BLUE" "$(color_for "$fu_fmt")" "$fu_fmt" "$RST")
     fi
   fi
@@ -107,15 +107,6 @@ render_segment() {
   fi
   local fail_tag=""
   [[ -f "$status" ]] && fail_tag=$(printf ' %s⚠%s' "$RED" "$BLUE")
-  # 非當前 session 的帳號只需回答「還有沒有空間切過去」，5h 與 weekly 兩個數字就夠；
-  # reset 時間與 scoped 拿掉，換 line 2 的寬度。
-  if [[ -n "$compact" ]]; then
-    printf '%s%s%s%s %s%s%%%s%s|%s%s%%%s' \
-      "$BLUE" "$(fmt_name "$email")" "$age_tag" "$fail_tag" \
-      "$sc" "$su_fmt" "$RST" \
-      "$BLUE" "$wc" "$wu_fmt" "$RST"
-    return
-  fi
   printf '%s%s:%s%s %s%s%%%s%s %s | %s%s  %s' \
     "$BLUE" "$(fmt_name "$email")" "$age_tag" "$fail_tag" \
     "$sc" "$su_fmt" "$RST" "$BLUE" \
@@ -189,7 +180,7 @@ for i in "${!SIDE_CACHES[@]}"; do
   if [[ -n "$MAIN_CACHE" ]] || (( i > 0 )); then
     printf '%s || ' "$BLUE"
   fi
-  render_segment "${SIDE_EMAILS[$i]}" "${SIDE_CACHES[$i]}" compact
+  render_segment "${SIDE_EMAILS[$i]}" "${SIDE_CACHES[$i]}"
 done
 
 printf '%s' "$RST"
