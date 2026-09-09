@@ -77,7 +77,7 @@ fi
 printf '== normal statusline output ==\n'
 NORMAL_OUTPUT=$(HOME="$TMP_HOME" bash "$SCRIPT")
 PLAIN_OUTPUT=$(printf '%s' "$NORMAL_OUTPUT" | perl -pe 's/\e\[[0-9;]*m//g')
-EXPECTED_PLAIN='Team: 10% — | 20%  — || side: ⚠ 30% — | 40%  — || status | ⚠ status-only @ 12:01:00'
+EXPECTED_PLAIN='S: 10% — | 20%  — || side ⚠ 30%|40% || status | ⚠ status-only @ 12:01:00'
 if [[ "$PLAIN_OUTPUT" == "$EXPECTED_PLAIN" ]]; then
   ok 'normal statusline rendering remains unchanged'
 else
@@ -85,11 +85,19 @@ else
 fi
 
 # side 同時有 cache 與 .status：畫數字 + 帳號名旁一個 ⚠，不整格藏起來。
+# 非當前帳號走 compact 版：只有 5h|weekly 兩個數字，沒有 reset 時間。
 # status 只有 .status 沒 cache：沒有數字可畫，維持整格錯誤訊息。
-if [[ "$PLAIN_OUTPUT" == *'side: ⚠ 30% — | 40%'* ]]; then
+if [[ "$PLAIN_OUTPUT" == *'side ⚠ 30%|40%'* ]]; then
   ok 'a failed fetch beside a usable cache degrades to a marker, not a blank pill'
 else
-  bad 'stale-status degradation' 'side: ⚠ 30% — | 40%' "$PLAIN_OUTPUT"
+  bad 'stale-status degradation' 'side ⚠ 30%|40%' "$PLAIN_OUTPUT"
+fi
+
+# 當前 session 的帳號保留完整資訊（reset 時間），非當前的不留。
+if [[ "$PLAIN_OUTPUT" == 'S: 10% — | 20%  —'* ]]; then
+  ok 'the session account keeps its reset times while side accounts drop them'
+else
+  bad 'main account detail' 'S: 10% — | 20%  —' "$PLAIN_OUTPUT"
 fi
 
 if [[ "$PLAIN_OUTPUT" == *'status | ⚠ status-only @ 12:01:00'* ]]; then
