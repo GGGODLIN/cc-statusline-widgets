@@ -153,6 +153,18 @@ for f in "$CACHE_DIR"/quota-*.json "$CACHE_DIR"/quota-*.status; do
 done
 shopt -u nullglob
 
+if [[ "${1:-}" == "--visible-accounts-json" ]]; then
+  {
+    if [[ -n "$MAIN_CACHE" ]]; then
+      jq -nc --arg email "$SESSION_EMAIL" --arg cache "$MAIN_CACHE" '{email: $email, cache: $cache}'
+    fi
+    for i in "${!SIDE_CACHES[@]}"; do
+      jq -nc --arg email "${SIDE_EMAILS[$i]}" --arg cache "${SIDE_CACHES[$i]}" '{email: $email, cache: $cache}'
+    done
+  } | jq -s '{accounts: .}'
+  exit 0
+fi
+
 if [[ -n "$MAIN_CACHE" ]]; then
   render_segment "$SESSION_EMAIL" "$MAIN_CACHE"
 fi
