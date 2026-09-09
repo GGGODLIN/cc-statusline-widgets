@@ -77,11 +77,25 @@ fi
 printf '== normal statusline output ==\n'
 NORMAL_OUTPUT=$(HOME="$TMP_HOME" bash "$SCRIPT")
 PLAIN_OUTPUT=$(printf '%s' "$NORMAL_OUTPUT" | perl -pe 's/\e\[[0-9;]*m//g')
-EXPECTED_PLAIN='Team: 10% — | 20%  — || side | ⚠ duplicate-status @ 12:02:00 || status | ⚠ status-only @ 12:01:00'
+EXPECTED_PLAIN='Team: 10% — | 20%  — || side: ⚠ 30% — | 40%  — || status | ⚠ status-only @ 12:01:00'
 if [[ "$PLAIN_OUTPUT" == "$EXPECTED_PLAIN" ]]; then
   ok 'normal statusline rendering remains unchanged'
 else
   bad 'normal statusline rendering' "$EXPECTED_PLAIN" "$PLAIN_OUTPUT"
+fi
+
+# side 同時有 cache 與 .status：畫數字 + 帳號名旁一個 ⚠，不整格藏起來。
+# status 只有 .status 沒 cache：沒有數字可畫，維持整格錯誤訊息。
+if [[ "$PLAIN_OUTPUT" == *'side: ⚠ 30% — | 40%'* ]]; then
+  ok 'a failed fetch beside a usable cache degrades to a marker, not a blank pill'
+else
+  bad 'stale-status degradation' 'side: ⚠ 30% — | 40%' "$PLAIN_OUTPUT"
+fi
+
+if [[ "$PLAIN_OUTPUT" == *'status | ⚠ status-only @ 12:01:00'* ]]; then
+  ok 'an account with no cache at all still shows the full failure reason'
+else
+  bad 'cacheless failure' 'status | ⚠ status-only @ 12:01:00' "$PLAIN_OUTPUT"
 fi
 
 printf '\n== %d passed, %d failed ==\n' "$PASS" "$FAIL"

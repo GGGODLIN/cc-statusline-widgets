@@ -65,7 +65,11 @@ render_segment() {
   local email="$1" cache="$2"
   local status="${cache%.json}.status"
 
-  if [[ -f "$status" ]]; then
+  # 有 cache 就畫數字，最後一次 fetch 失敗只降級成帳號名旁的 ⚠ 標記。
+  # 兩個 writer（chrome extension 30s、poller 180s fallback）任一失敗時，另一個
+  # 的資料仍可能是新鮮的；整格藏起來會蓋掉正確數字。cache 的新舊由 age_tag 表達。
+  # 完全沒 cache 才退回整格錯誤訊息——那時沒有數字可畫。
+  if [[ -f "$status" && ! -f "$cache" ]]; then
     local ts msg
     IFS=$'\t' read -r ts msg < "$status"
     printf '%s%s | %s⚠ %s @ %s%s' "$BLUE" "$(fmt_name "$email")" "$RED" "$msg" "$ts" "$RST"
@@ -100,8 +104,10 @@ render_segment() {
     age_tag=$(printf ' %s[%s old]%s' "$YELLOW" "$(fmt_age "$age")" "$BLUE")
     (( age >= STALE_AFTER_SECONDS )) && age_tag=$(printf ' %s[⚠ %s stale]%s' "$RED" "$(fmt_age "$age")" "$BLUE")
   fi
-  printf '%s%s:%s %s%s%%%s%s %s | %s%s  %s' \
-    "$BLUE" "$(fmt_name "$email")" "$age_tag" \
+  local fail_tag=""
+  [[ -f "$status" ]] && fail_tag=$(printf ' %s⚠%s' "$RED" "$BLUE")
+  printf '%s%s:%s%s %s%s%%%s%s %s | %s%s  %s' \
+    "$BLUE" "$(fmt_name "$email")" "$age_tag" "$fail_tag" \
     "$sc" "$su_fmt" "$RST" "$BLUE" \
     "$(fmt_reset "$sr_at")" \
     "$weekly_part" "$BLUE" \
