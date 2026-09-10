@@ -69,6 +69,20 @@ if command -v macmon >/dev/null 2>&1; then
   BG_PIDS+=($!)
 fi
 
+# Background OTLP receiver: maps CC session.id -> user.email so usage-color.sh
+# can name the account THIS session actually burns (CC 憑證是 per-process 的，
+# $HOME/.claude.json 只記最後一次登入誰). Same watchdog shape as macmon above.
+RECEIVER="$(dirname "$0")/session-account-receiver.py"
+if [[ -f "$RECEIVER" ]]; then
+  (
+    while true; do
+      python3 "$RECEIVER" >/dev/null 2>&1
+      sleep 5
+    done
+  ) &
+  BG_PIDS+=($!)
+fi
+
 if (( ${#BG_PIDS[@]} > 0 )); then
   trap 'kill "${BG_PIDS[@]}" 2>/dev/null' EXIT INT TERM
 fi

@@ -825,7 +825,7 @@ fmt_codex_quota() {
 
 usage_part=""
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
-  usage_part=$("$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
+  usage_part=$(CC_SESSION_ID="$session_id" "$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
 fi
 trim_ws() {
   local s="$1"

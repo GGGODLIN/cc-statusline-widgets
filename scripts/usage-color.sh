@@ -63,8 +63,9 @@ fmt_age() {
 }
 
 render_segment() {
-  local email="$1" cache="$2"
+  local email="$1" cache="$2" mark="${3:-}"
   local status="${cache%.json}.status"
+  local name="$(fmt_name "$email")$mark"
 
   # 有 cache 就畫數字，最後一次 fetch 失敗只降級成帳號名旁的 ⚠ 標記。
   # 兩個 writer（chrome extension 30s、poller 180s fallback）任一失敗時，另一個
@@ -73,7 +74,7 @@ render_segment() {
   if [[ -f "$status" && ! -f "$cache" ]]; then
     local ts msg
     IFS=$'\t' read -r ts msg < "$status"
-    printf '%s%s | %s⚠ %s @ %s%s' "$BLUE" "$(fmt_name "$email")" "$RED" "$msg" "$ts" "$RST"
+    printf '%s%s | %s⚠ %s @ %s%s' "$BLUE" "$name" "$RED" "$msg" "$ts" "$RST"
     return
   fi
 
@@ -108,7 +109,7 @@ render_segment() {
   local fail_tag=""
   [[ -f "$status" ]] && fail_tag=$(printf ' %s⚠%s' "$RED" "$BLUE")
   printf '%s%s:%s%s %s%s%%%s%s %s | %s%s  %s' \
-    "$BLUE" "$(fmt_name "$email")" "$age_tag" "$fail_tag" \
+    "$BLUE" "$name" "$age_tag" "$fail_tag" \
     "$sc" "$su_fmt" "$RST" "$BLUE" \
     "$(fmt_reset "$sr_at")" \
     "$weekly_part" "$BLUE" \
@@ -116,13 +117,28 @@ render_segment() {
 }
 
 # 排第一的是「當前 session 實際在燒的帳號」，不是「default dir 登入誰」。
-# lock session（cc -team / cc -max）帶 CLAUDE_CONFIG_DIR 進來，statusline 子 process 繼承得到；
-# 一般 session 沒帶 → 退回 user-global，順序與過去一致。
+#
+# 判定順序，強度由高到低：
+#   1. OTel map（session-account-receiver.py 收 CC 自報的 session.id -> user.email）
+#      ——唯一與程序直接綁定的來源。CC 憑證是 per-process 的：一個 session 跑
+#      /login 不會換掉其他正在跑的 session，所以全域檔在多 session 下必然說謊。
+#   2. CLAUDE_CONFIG_DIR/.claude.json（lock session：cc -team-p / -team-s 帶進來，
+#      statusline 子 process 繼承得到）——帳號綁在啟動指令上，可信。
+#   3. $HOME/.claude.json ——只記「最後一次 /login 登了誰」，全域共享。用它時
+#      在帳號名後面標 ? 表示未確認，不假裝確定（顧問 2026-09-10 的第 3 條）。
 SESSION_EMAIL=""
-if [[ -n "${CLAUDE_CONFIG_DIR:-}" && -f "$CLAUDE_CONFIG_DIR/.claude.json" ]]; then
+SESSION_MARK=""
+SESSION_MAP="${CC_WIDGET_CACHE_DIR:-/tmp/cc-widget-cache}/session-account.json"
+if [[ -n "${CC_SESSION_ID:-}" && -f "$SESSION_MAP" ]]; then
+  SESSION_EMAIL=$(jq -r --arg sid "$CC_SESSION_ID" '.sessions[$sid].email // ""' "$SESSION_MAP" 2>/dev/null)
+fi
+if [[ -z "$SESSION_EMAIL" && -n "${CLAUDE_CONFIG_DIR:-}" && -f "$CLAUDE_CONFIG_DIR/.claude.json" ]]; then
   SESSION_EMAIL=$(jq -r '.oauthAccount.emailAddress // ""' "$CLAUDE_CONFIG_DIR/.claude.json" 2>/dev/null)
 fi
-[[ -z "$SESSION_EMAIL" ]] && SESSION_EMAIL=$(jq -r '.oauthAccount.emailAddress // ""' "$HOME/.claude.json" 2>/dev/null)
+if [[ -z "$SESSION_EMAIL" ]]; then
+  SESSION_EMAIL=$(jq -r '.oauthAccount.emailAddress // ""' "$HOME/.claude.json" 2>/dev/null)
+  [[ -n "$SESSION_EMAIL" ]] && SESSION_MARK="?"
+fi
 
 email_from_path() {
   local p=$1
@@ -173,7 +189,7 @@ if [[ "${1:-}" == "--visible-accounts-json" ]]; then
 fi
 
 if [[ -n "$MAIN_CACHE" ]]; then
-  render_segment "$SESSION_EMAIL" "$MAIN_CACHE"
+  render_segment "$SESSION_EMAIL" "$MAIN_CACHE" "$SESSION_MARK"
 fi
 
 for i in "${!SIDE_CACHES[@]}"; do
