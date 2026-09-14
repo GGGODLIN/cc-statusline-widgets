@@ -40,25 +40,16 @@ bash ~/.claude/scripts/cc-statusline/wrapper.sh < stdin.json
 
 map 只在 session 啟動後約 10 秒（metric export interval）才出現，且**既有 session 沒帶 env 就永遠不會進 map**。
 
-## Subagent pill（🤖 活躍/累計）踩在兩個來源上
+## Subagent pill（🤖 N）只數總量，不數活躍
 
-`subagent-count.sh` 出的 `🤖 2/8`，兩個數字來源不同：
+`subagent-count.sh` 數 `<transcript_path 去掉 .jsonl>/subagents/*.meta.json`，只算 `spawnDepth == 1`
+（main session 自己派的；agent 再派的那層不重複計）。CC 在派工當下就寫 meta，不是結束才寫。
 
-- **累計（8）**：數 `<transcript_path 去掉 .jsonl>/subagents/*.meta.json`，只算 `spawnDepth == 1`
-  （main session 自己派的）。CC 在派工當下就寫 meta，不是結束才寫。
-- **活躍（2）**：優先讀 `subagent-statusline.sh` 寫的 `/tmp/cc-widget-cache/subagents-<session_id>.json`，
-  `ts` 在 15 秒內才採用；過期或沒有就回退 A 路線——meta 的 `toolUseId` 在主 transcript
-  還沒出現對應 `tool_result` 就算活躍。
+**刻意不顯示活躍數**：CC 原生 agent panel（prompt 下方）本來就即時列出正在跑的 subagent，
+statusline 再報一次是重複。panel 在跑完後會消失，累計總量才是別處留不住的東西。
 
-兩個 repo 外的前提，重裝機器要另外補：
-
-1. `~/.claude/settings.json` 的 `subagentStatusLine` 指向 `~/.claude/scripts/cc-statusline/subagent-statusline.sh`
-   （**在 repo 外**）。沒有它只剩 A 路線，活躍數會慢一拍。
-2. `statusLine.refreshInterval`（目前 1 秒）。沒設的話主 session 閒等 subagent 時 statusline 不重跑，
-   活躍數會卡住不動——官方文件把這個設定明確標為此場景用。
-
-A 路線擋不住 agent 被中止或 CC 當掉（`tool_result` 永遠不會來），所以有 stale 保護：
-agent 自己的 jsonl 超過 `SUBAGENT_STALE_SEC`（預設 600 秒）沒寫入就不算活躍。
+2026-09-14 曾接過一版活躍數（`subagentStatusLine` 採集器 + `toolUseId` 對帳），實測準確
+（agent 起跑 2 秒內亮、結束 2 秒內滅），因重複而移除，見 `git log` f1ac30c。要復原去翻那個 commit。
 
 ## 改 daemon-side script 要 restart daemon
 

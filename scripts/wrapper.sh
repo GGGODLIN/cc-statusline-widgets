@@ -412,7 +412,7 @@ else
   skills_fmt="🪄 -"
 fi
 
-subagents_fmt=$("$SCRIPT_DIR/subagent-count.sh" "$transcript_path" "$session_id" 2>/dev/null)
+subagents_fmt=$("$SCRIPT_DIR/subagent-count.sh" "$transcript_path" 2>/dev/null)
 [[ -n "$subagents_fmt" ]] || subagents_fmt="🤖 ?"
 
 [[ -n "$runaway" ]] && push_seg 1 "$WT_BG_RUNAWAY" "$runaway"
