@@ -60,6 +60,7 @@ WT_BG_DEEPSEEK=${WT_BG_DEEPSEEK:-${WT_BG_VENDOR_LEGACY:-${VL_BG_CLOCK:-70,80,110
 WT_BG_DS_PEAK=${WT_BG_DS_PEAK:-${VL_BG_DS_PEAK:-88}}
 WT_BG_GLM=${WT_BG_GLM:-${VL_BG_GLM:-99}}
 WT_BG_GLM_PEAK=${WT_BG_GLM_PEAK:-${VL_BG_GLM_PEAK:-88}}
+WT_BG_AGENTS=${WT_BG_AGENTS:-${VL_BG_AGENTS:-${VL_BG_DURATION:-60}}}
 WT_BG_CTX=${WT_BG_CTX:-${VL_BG_CTX:-238}}
 WT_BG_SYS=${WT_BG_SYS:-${VL_BG_LINES:-240}}
 WT_BG_SYS2=${WT_BG_SYS2:-${VL_BG_DURATION:-60}}
@@ -411,12 +412,16 @@ else
   skills_fmt="🪄 -"
 fi
 
+subagents_fmt=$("$SCRIPT_DIR/subagent-count.sh" "$transcript_path" "$session_id" 2>/dev/null)
+[[ -n "$subagents_fmt" ]] || subagents_fmt="🤖 ?"
+
 [[ -n "$runaway" ]] && push_seg 1 "$WT_BG_RUNAWAY" "$runaway"
 model_pill_text="◆ ${model_name}"
 [[ -n "$effort_level" ]] && model_pill_text="${model_pill_text} (${effort_level})"
 push_seg 1 "$WT_BG_MODEL" "${BOLD}${model_pill_text}${NORM}"
 [[ -n "$cache_hit_fmt" ]] && push_seg 1 "$WT_BG_CACHE" "$cache_hit_fmt"
 push_seg 1 "$WT_BG_SKILL" "$skills_fmt"
+push_seg 1 "$WT_BG_AGENTS" "$subagents_fmt"
 git_seg="$git_branch_fmt"
 [[ -n "$git_ab_fmt" ]] && git_seg="${git_seg} ${git_ab_fmt}"
 git_bg="$WT_BG_GIT_OK"
@@ -1029,6 +1034,7 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg ctx_pct     "$ctx_used_pct" \
     --arg ctx_tokens  "$ctx_used_tokens" \
     --arg skill       "$skill_name" \
+    --arg subagents   "$subagents_fmt" \
     --arg git_branch  "$git_branch_fmt" \
     --arg git_ab      "$git_ab_fmt" \
     --arg runaway     "$runaway" \

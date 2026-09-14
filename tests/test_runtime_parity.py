@@ -16,6 +16,8 @@ class RuntimeParityTest(unittest.TestCase):
       REPO / "scripts/thermals.sh": RUNTIME / "thermals.sh",
       REPO / "scripts/skill-hook.sh": RUNTIME / "skill-hook.sh",
       REPO / "scripts/runaway.sh": RUNTIME / "runaway.sh",
+      REPO / "scripts/subagent-count.sh": RUNTIME / "subagent-count.sh",
+      REPO / "scripts/subagent-statusline.sh": RUNTIME / "subagent-statusline.sh",
       REPO / "scripts/usage-color.sh": Path.home() / ".claude/scripts/usage-color.sh",
     }
     for source, runtime in pairs.items():

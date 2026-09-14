@@ -40,6 +40,26 @@ bash ~/.claude/scripts/cc-statusline/wrapper.sh < stdin.json
 
 map 只在 session 啟動後約 10 秒（metric export interval）才出現，且**既有 session 沒帶 env 就永遠不會進 map**。
 
+## Subagent pill（🤖 活躍/累計）踩在兩個來源上
+
+`subagent-count.sh` 出的 `🤖 2/8`，兩個數字來源不同：
+
+- **累計（8）**：數 `<transcript_path 去掉 .jsonl>/subagents/*.meta.json`，只算 `spawnDepth == 1`
+  （main session 自己派的）。CC 在派工當下就寫 meta，不是結束才寫。
+- **活躍（2）**：優先讀 `subagent-statusline.sh` 寫的 `/tmp/cc-widget-cache/subagents-<session_id>.json`，
+  `ts` 在 15 秒內才採用；過期或沒有就回退 A 路線——meta 的 `toolUseId` 在主 transcript
+  還沒出現對應 `tool_result` 就算活躍。
+
+兩個 repo 外的前提，重裝機器要另外補：
+
+1. `~/.claude/settings.json` 的 `subagentStatusLine` 指向 `~/.claude/scripts/cc-statusline/subagent-statusline.sh`
+   （**在 repo 外**）。沒有它只剩 A 路線，活躍數會慢一拍。
+2. `statusLine.refreshInterval`（目前 1 秒）。沒設的話主 session 閒等 subagent 時 statusline 不重跑，
+   活躍數會卡住不動——官方文件把這個設定明確標為此場景用。
+
+A 路線擋不住 agent 被中止或 CC 當掉（`tool_result` 永遠不會來），所以有 stale 保護：
+agent 自己的 jsonl 超過 `SUBAGENT_STALE_SEC`（預設 600 秒）沒寫入就不算活躍。
+
 ## 改 daemon-side script 要 restart daemon
 
 daemon 5s cycle 才 reload，改 `daemon.sh` 的 `WIDGETS` array 後 `install.sh` 會 bootout/bootstrap。
