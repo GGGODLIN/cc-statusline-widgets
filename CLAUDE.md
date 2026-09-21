@@ -51,6 +51,11 @@ statusline 再報一次是重複。panel 在跑完後會消失，累計總量才
 2026-09-14 曾接過一版活躍數（`subagentStatusLine` 採集器 + `toolUseId` 對帳），實測準確
 （agent 起跑 2 秒內亮、結束 2 秒內滅），因重複而移除，見 `git log` f1ac30c。要復原去翻那個 commit。
 
+**0 個時整顆 pill 不顯示**（2026-09-21 trial review 拍板）：`wrapper.sh` 的 `push_seg` 前加
+`[[ "$subagents_fmt" != "🤖 -" ]]`。理由是觀察窗內 47% 的 session 沒派工，`🤖 -` 會緊貼
+`🪄 -` 變成兩個並排空槓。`🤖 ?`（腳本失敗的 fallback）照常顯示——那是故障訊號、不能藏。
+`$subagents_fmt` 本身不變，widget-log 仍記錄原始值，指標歷史不漂移。
+
 ## 改 daemon-side script 要 restart daemon
 
 daemon 5s cycle 才 reload，改 `daemon.sh` 的 `WIDGETS` array 後 `install.sh` 會 bootout/bootstrap。
