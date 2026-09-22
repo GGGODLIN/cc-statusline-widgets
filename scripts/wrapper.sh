@@ -366,7 +366,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
       fi
       compactions=$(jq -r '.compactions // 0' <<<"$cache_data")
       if (( compactions > 0 )); then
-        cache_hit_fmt="${cache_hit_fmt} ${GRAY}⧉${RST}${BOLD}${YELLOW}×${compactions}${RST}"
+        cache_hit_fmt="${cache_hit_fmt} ${GRAY}⧉${RST}${BOLD}${YELLOW}  ${compactions}${RST}"
       fi
     fi
   fi
