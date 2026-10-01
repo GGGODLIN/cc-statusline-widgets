@@ -6,7 +6,7 @@ import subprocess
 import tempfile
 import time
 import unittest
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,10 +74,22 @@ class WrapperQuotaContractTests(unittest.TestCase):
       "data": {"weekly": weekly}
     }
 
-  def deepseek_cache(self, balances, *, fetched_at=None):
+  def write_grok_samples(self, *samples):
+    path = self.home / ".cli-proxy-api" / "grok-quota-samples.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(json.dumps(s) + "\n" for s in samples))
+    return path
+
+  def grok_sample(self, *, pct=4.0, age=60, period_age=3600):
+    def iso(epoch, fraction=""):
+      return datetime.fromtimestamp(epoch, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S") + fraction + "+00:00"
     return {
-      "fetched_at": self.now if fetched_at is None else fetched_at,
-      "data": {"balance_infos": balances}
+      "at": iso(self.now - age),
+      "pct": pct,
+      "period_start": iso(self.now - period_age, ".254613"),
+      "requests": 1,
+      "tokens": 100,
+      "usd": 0.1
     }
 
   def run_wrapper(self, *, log=False):
@@ -271,103 +283,66 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     self.assertNotIn("GPT:", output)
 
-  def test_deepseek_sorts_currencies_omits_zero_and_ignores_legacy(self):
-    self.write_json("vendor-deepseek-local.json", self.deepseek_cache([
-      {"currency": "USD", "total_balance": "5.00"},
-      {"currency": "JPY", "total_balance": "0.000"},
-      {"currency": "CNY", "total_balance": "10.00"}
-    ]))
-    self.write_json("vendor-deepseek-deadbeef.json", {
-      "fetched_at": self.now + 100,
-      "data": {"balance_infos": [{"currency": "USD", "total_balance": "999.00"}]}
-    })
+  def test_grok_uses_last_sample_with_weekly_countdown(self):
+    self.write_grok_samples(self.grok_sample(pct=99.0, age=600), self.grok_sample(pct=4.0, period_age=5400))
 
     output = self.run_wrapper()
 
-    self.assertIn("DS: ¥10.00 | $5.00", output)
-    self.assertNotIn("0.000", output)
-    self.assertNotIn("999.00", output)
+    # period started 1.5h ago, so the weekly reset is 6d22h30m away
+    self.assertIn("Grok: 4% · 6d22h", output)
+    self.assertNotIn("99%", output)
 
-  def test_deepseek_newer_status_suppresses_balance(self):
-    self.write_json("vendor-deepseek-local.json", self.deepseek_cache(
-      [{"currency": "USD", "total_balance": "5.00"}],
-      fetched_at=self.now - 2
-    ))
-    self.write_json("vendor-deepseek-local.status", {"failed_at": self.now - 1, "reason": "network-error"})
+  def test_grok_stale_sample_is_flagged(self):
+    self.write_grok_samples(self.grok_sample(age=901))
 
     output = self.run_wrapper()
 
-    self.assertNotIn("DS:", output)
-    self.assertNotIn("5.00", output)
+    self.assertIn("Grok: stale", output)
+    self.assertNotIn("Grok: 4%", output)
 
-  def test_deepseek_equal_timestamp_status_suppresses_balance(self):
-    self.write_json("vendor-deepseek-local.json", self.deepseek_cache(
-      [{"currency": "USD", "total_balance": "5.00"}],
-      fetched_at=self.now
-    ))
-    self.write_json("vendor-deepseek-local.status", {"failed_at": self.now, "reason": "network-error"})
+  def test_grok_invalid_sample_is_flagged(self):
+    self.write_grok_samples({"at": "nope", "pct": 4.0, "period_start": "nope"})
 
     output = self.run_wrapper()
 
-    self.assertNotIn("DS:", output)
-    self.assertNotIn("5.00", output)
+    self.assertIn("Grok: invalid cache", output)
 
-  def test_deepseek_older_status_is_ignored(self):
-    self.write_json("vendor-deepseek-local.json", self.deepseek_cache(
-      [{"currency": "USD", "total_balance": "5.00"}],
-      fetched_at=self.now
-    ))
-    self.write_json("vendor-deepseek-local.status", {"failed_at": self.now - 1, "reason": "old-error"})
-
+  def test_grok_no_samples_is_hidden(self):
     output = self.run_wrapper()
 
-    self.assertIn("DS: $5.00", output)
+    self.assertNotIn("Grok:", output)
 
-  def test_deepseek_stale_cache_is_suppressed(self):
-    self.write_json("vendor-deepseek-local.json", self.deepseek_cache(
-      [{"currency": "USD", "total_balance": "5.00"}],
-      fetched_at=self.now - 91
-    ))
-
-    output = self.run_wrapper()
-
-    self.assertNotIn("DS:", output)
-    self.assertNotIn("5.00", output)
-
-  def test_deepseek_invalid_cache_is_suppressed(self):
-    self.write_raw("vendor-deepseek-local.json", "{")
-    self.write_json("vendor-deepseek-deadbeef.json", {
-      "fetched_at": self.now,
-      "data": {"balance_infos": [{"currency": "USD", "total_balance": "999.00"}]}
-    })
-
-    output = self.run_wrapper()
-
-    self.assertNotIn("DS:", output)
-    self.assertNotIn("999.00", output)
-
-  def test_gpt_precedes_deepseek_and_glm_stays_hidden(self):
+  def test_gpt_precedes_grok_and_deepseek_is_gone(self):
     self.write_json("vendor-codex-local.json", self.codex_cache())
-    self.write_json("vendor-deepseek-local.json", self.deepseek_cache([
-      {"currency": "USD", "total_balance": "5.00"}
-    ]))
-    self.write_json("vendor-glm-deadbeef.json", {
-      "data": {"limits": [{"type": "TOKENS_LIMIT", "percentage": 50}]}
+    self.write_grok_samples(self.grok_sample())
+    self.write_json("vendor-deepseek-local.json", {
+      "fetched_at": self.now,
+      "data": {"balance_infos": [{"currency": "CNY", "total_balance": "10.00"}]}
     })
 
     output = self.run_wrapper()
 
-    self.assertLess(output.index("GPT:"), output.index("DS:"))
-    self.assertNotIn("GLM:", output)
+    self.assertLess(output.index("GPT:"), output.index("Grok:"))
+    self.assertNotIn("DS:", output)
 
-  def test_gpt_and_deepseek_use_distinct_backgrounds(self):
+  def test_gpt_and_grok_use_distinct_backgrounds(self):
     source = WRAPPER.read_text()
 
-    self.assertIn('WT_BG_VENDOR_LEGACY=${WT_BG_VENDOR:-}', source)
     self.assertIn('WT_BG_CODEX=${WT_BG_CODEX:-${WT_BG_VENDOR_LEGACY:-${VL_BG_STYLE:-96}}}', source)
-    self.assertIn('WT_BG_DEEPSEEK=${WT_BG_DEEPSEEK:-${WT_BG_VENDOR_LEGACY:-${VL_BG_CLOCK:-70,80,110}}}', source)
+    self.assertIn('WT_BG_GROK=${WT_BG_GROK:-${WT_BG_VENDOR_LEGACY:-${VL_BG_CLOCK:-70,80,110}}}', source)
     self.assertIn('push_seg 2 "$WT_BG_CODEX" "$CODEX_PILL_OUT"', source)
-    self.assertIn('push_seg 2 "$WT_BG_DEEPSEEK" "$ds_part"', source)
+    self.assertIn('push_seg 2 "$WT_BG_GROK" "$GROK_PILL_OUT"', source)
+
+  def test_widget_log_records_grok_fields(self):
+    self.write_grok_samples(self.grok_sample(pct=7.9))
+
+    self.run_wrapper(log=True)
+
+    month = datetime.now().strftime("%Y-%m")
+    log_path = self.home / ".claude" / "projects" / "widget-log" / f"{month}.jsonl"
+    entry = json.loads(log_path.read_text().splitlines()[-1])
+    self.assertEqual(entry["grok_weekly_used_pct"], "7")
+    self.assertEqual(entry["grok_weekly_reset_at"], str(self.now - 3600 + 604800))
 
   def test_widget_log_has_exact_codex_fields_and_null_reset_values(self):
     self.write_json("vendor-codex-local.json", self.codex_cache(

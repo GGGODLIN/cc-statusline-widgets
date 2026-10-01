@@ -56,8 +56,7 @@ WT_BG_USAGE2=${WT_BG_USAGE2:-${VL_BG_CTX:-238}}
 WT_BG_VENDOR_LEGACY=${WT_BG_VENDOR:-}
 WT_BG_VENDOR=${WT_BG_VENDOR:-${VL_BG_CLOCK:-70,80,110}}
 WT_BG_CODEX=${WT_BG_CODEX:-${WT_BG_VENDOR_LEGACY:-${VL_BG_STYLE:-96}}}
-WT_BG_DEEPSEEK=${WT_BG_DEEPSEEK:-${WT_BG_VENDOR_LEGACY:-${VL_BG_CLOCK:-70,80,110}}}
-WT_BG_DS_PEAK=${WT_BG_DS_PEAK:-${VL_BG_DS_PEAK:-88}}
+WT_BG_GROK=${WT_BG_GROK:-${WT_BG_VENDOR_LEGACY:-${VL_BG_CLOCK:-70,80,110}}}
 WT_BG_GLM=${WT_BG_GLM:-${VL_BG_GLM:-99}}
 WT_BG_GLM_PEAK=${WT_BG_GLM_PEAK:-${VL_BG_GLM_PEAK:-88}}
 WT_BG_AGENTS=${WT_BG_AGENTS:-${VL_BG_AGENTS:-${VL_BG_DURATION:-60}}}
@@ -118,6 +117,7 @@ fmt_glm_countdown() {
 
 GLM_5H_PCT="" ; GLM_W_PCT="" ; GLM_LEVEL="" ; GLM_PILL_OUT="" ; GLM_PILL_BG=""
 CODEX_WEEKLY_REMAINING_PCT="" ; CODEX_WEEKLY_USED_PCT="" ; CODEX_WEEKLY_RESET_AT="" ; CODEX_PILL_OUT=""
+GROK_WEEKLY_USED_PCT="" ; GROK_WEEKLY_RESET_AT="" ; GROK_PILL_OUT=""
 S1_BG=() ; S1_TX=() ; S2_BG=() ; S2_TX=() ; S3_BG=() ; S3_TX=()
 push_seg() {  # $1=line-no $2=bg $3=text
   eval "S${1}_BG[\${#S${1}_BG[@]}]=\$2 ; S${1}_TX[\${#S${1}_TX[@]}]=\$3"
@@ -486,121 +486,6 @@ fmt_vendor_balance() {
   printf '%s%s%s%s%s' "$sep" "$c" "$sym" "$balance" "$RST"
 }
 
-ds_peak_state() {
-  local now_hm now_h_cn now_m_cn peak_end
-  now_hm=$(TZ=Asia/Shanghai date +"%H %M" 2>/dev/null)
-  read -r now_h_cn now_m_cn <<<"$now_hm"
-  now_h_cn=$((10#${now_h_cn:-0}))
-  now_m_cn=$((10#${now_m_cn:-0}))
-  if   (( now_h_cn >= 9 && now_h_cn < 12 )); then peak_end=12
-  elif (( now_h_cn >= 14 && now_h_cn < 18 )); then peak_end=18
-  fi
-  [[ -z "$peak_end" ]] && return
-  local diff_m=$(( peak_end*60 - now_h_cn*60 - now_m_cn ))
-  local dh=$(( diff_m / 60 )) dm=$(( diff_m % 60 ))
-  if (( dh > 0 )); then printf '%s' "${dh}h${dm}m"
-  else                  printf '%s' "${dm}m"
-  fi
-}
-
-fmt_deepseek_balances() {
-  local label=$1
-  local json="$QUOTA_CACHE_DIR/vendor-deepseek-local.json"
-  local status="$QUOTA_CACHE_DIR/vendor-deepseek-local.status"
-  [[ ! -f "$json" ]] && return
-
-  local parsed
-  parsed=$(jq -er '
-    def valid_number: type == "number" and isfinite;
-    def valid_balance:
-      if type == "number" then isfinite
-      elif type == "string" then try (tonumber | isfinite) catch false
-      else false
-      end;
-    select(type == "object")
-    | .fetched_at as $fetched
-    | .data.balance_infos as $balances
-    | select(($fetched | valid_number) and (($fetched | floor) == $fetched))
-    | select(($balances | type) == "array")
-    | select(all($balances[];
-        type == "object"
-        and ((.currency | type) == "string")
-        and ((.currency | length) > 0)
-        and (.total_balance | valid_balance)
-      ))
-    | ([$fetched] | @tsv),
-      ($balances
-        | sort_by(.currency)
-        | .[]
-        | select((.total_balance | tonumber) != 0)
-        | [.currency, (.total_balance | tostring)]
-        | @tsv)
-  ' "$json" 2>/dev/null) || return
-
-  local fetched_at="${parsed%%$'\n'*}"
-  if [[ -f "$status" ]]; then
-    local status_parsed failed_at reason
-    status_parsed=$(jq -er '
-      select(type == "object")
-      | .failed_at as $failed
-      | .reason as $reason
-      | select(($failed | type) == "number" and ($failed | isfinite) and (($failed | floor) == $failed))
-      | select(($reason | type) == "string" and ($reason | test("^[a-z0-9-]+$")))
-      | [$failed, $reason]
-      | @tsv
-    ' "$status" 2>/dev/null) || return
-    IFS=$'\t' read -r failed_at reason <<<"$status_parsed"
-    (( failed_at >= fetched_at )) && return
-  fi
-
-  local now_sec
-  now_sec=$(date +%s)
-  (( now_sec - fetched_at > 90 )) && return
-
-  local result="" first=1 line_no=0 currency balance
-  while IFS=$'\t' read -r currency balance; do
-    line_no=$(( line_no + 1 ))
-    (( line_no == 1 )) && continue
-
-    [[ "$currency" == "CNY" ]] || continue
-
-    local red yellow
-    if [[ "$currency" == "CNY" ]]; then
-      red=8; yellow=30
-    else
-      red=1; yellow=4
-    fi
-
-    local color
-    color=$(awk -v b="$balance" -v r="$red" -v y="$yellow" '
-    BEGIN {
-      if (b + 0 < r) print "R"
-      else if (b + 0 < y) print "Y"
-      else                 print "G"
-    }')
-
-    local c sym="\$"
-    [[ "$currency" == "CNY" ]] && sym="¥"
-    case "$color" in
-      R) c="$RED" ;;
-      Y) c="$YELLOW" ;;
-      *) c="$GREEN" ;;
-    esac
-
-    local sep=""
-    [[ $first -eq 0 ]] && sep="${BLUE} | ${RST}"
-    local lbl=""
-    [[ $first -eq 1 && -n "$label" ]] && lbl="${BLUE}${label}: ${RST}"
-    result="${result}${sep}${lbl}${c}${sym}${balance}${RST}"
-    first=0
-  done <<<"$parsed"
-  local cd
-  cd=$(ds_peak_state)
-  [[ -n "$cd" ]] && result="${result}${BLUE} 🔥${cd}${RST}"
-
-  [[ -n "$result" ]] && printf '%s' "$result"
-}
-
 fmt_vendor_plan() {
   local vendor=$1
   local pid="$ACTIVE_PID"
@@ -828,6 +713,48 @@ fmt_codex_quota() {
   printf '%s' "$CODEX_PILL_OUT"
 }
 
+# Producer is cliproxyapi-setup's grok-quota LaunchAgent (5-min samples of Grok Build's
+# _x.ai/billing). Polling billing here would spawn a grok agent process on every render.
+fmt_grok_quota() {
+  GROK_WEEKLY_USED_PCT=""
+  GROK_WEEKLY_RESET_AT=""
+  GROK_PILL_OUT=""
+
+  local samples="${GROK_QUOTA_SAMPLES:-$HOME/.cli-proxy-api/grok-quota-samples.jsonl}"
+  [[ -f "$samples" ]] || return
+
+  local parsed sampled_at used_pct reset_at
+  parsed=$(tail -n 1 "$samples" | jq -er '
+    def utc_epoch: sub("\\.[0-9]+"; "") | sub("(\\+00:00|Z)$"; "Z") | fromdateiso8601;
+    select(type == "object")
+    | select((.pct | type) == "number" and .pct >= 0 and .pct <= 100)
+    | select((.at | type) == "string" and (.period_start | type) == "string")
+    | [(.at | utc_epoch), (.pct | floor), ((.period_start | utc_epoch) + 604800)]
+    | @tsv
+  ' 2>/dev/null) || {
+    GROK_PILL_OUT="${RED}Grok: invalid cache${RST}"
+    printf '%s' "$GROK_PILL_OUT"
+    return
+  }
+  IFS=$'\t' read -r sampled_at used_pct reset_at <<<"$parsed"
+
+  # three missed 5-min samples: the agent is down or the grok login expired
+  if (( $(date +%s) - sampled_at > 900 )); then
+    GROK_PILL_OUT="${RED}Grok: stale${RST}"
+    printf '%s' "$GROK_PILL_OUT"
+    return
+  fi
+
+  GROK_WEEKLY_USED_PCT="$used_pct"
+  GROK_WEEKLY_RESET_AT="$reset_at"
+
+  local color countdown
+  color=$(quota_pct_color "$used_pct")
+  countdown=$(fmt_glm_countdown "$(( reset_at * 1000 ))")
+  GROK_PILL_OUT="${BLUE}Grok: ${RST}${color}${used_pct}%${RST}${BLUE} · ${countdown}${RST}"
+  printf '%s' "$GROK_PILL_OUT"
+}
+
 usage_part=""
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
   usage_part=$(CC_SESSION_ID="$session_id" "$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
@@ -866,10 +793,8 @@ fi
 fmt_codex_quota >/dev/null 2>&1 || true
 [[ -n "$CODEX_PILL_OUT" ]] && push_seg 2 "$WT_BG_CODEX" "$CODEX_PILL_OUT"
 
-ds_part=$(fmt_deepseek_balances "DS" 2>/dev/null || echo "")
-ds_bg=$WT_BG_DEEPSEEK
-[[ -n "$(ds_peak_state)" ]] && ds_bg=$WT_BG_DS_PEAK
-[[ -n "$ds_part" ]] && push_seg 2 "$ds_bg" "$ds_part"
+fmt_grok_quota >/dev/null 2>&1 || true
+[[ -n "$GROK_PILL_OUT" ]] && push_seg 2 "$WT_BG_GROK" "$GROK_PILL_OUT"
 
 # ----- Line 3 -----
 # context-bar
@@ -1026,6 +951,8 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg codex_weekly_remaining_pct "$CODEX_WEEKLY_REMAINING_PCT" \
     --arg codex_weekly_used_pct "$CODEX_WEEKLY_USED_PCT" \
     --arg codex_weekly_reset_at "$CODEX_WEEKLY_RESET_AT" \
+    --arg grok_weekly_used_pct "$GROK_WEEKLY_USED_PCT" \
+    --arg grok_weekly_reset_at "$GROK_WEEKLY_RESET_AT" \
     --arg cache_hit   "${hit:-}" \
     --arg cache_flushes "${flushes:-0}" \
     --arg cache_waste "${waste:-0}" \
