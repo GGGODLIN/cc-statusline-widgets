@@ -60,3 +60,16 @@ statusline 再報一次是重複。panel 在跑完後會消失，累計總量才
 
 daemon 5s cycle 才 reload，改 `daemon.sh` 的 `WIDGETS` array 後 `install.sh` 會 bootout/bootstrap。
 立即 refresh 單一 widget cache：`rm /tmp/cc-widget-cache/.last-<name> && sleep <cycle+1>`
+
+## Grok pill 有兩個資料來源
+
+`Grok: X% · 倒數 | Bot: Y% · 倒數` 是兩個獨立的週額度，週期起點不同：
+
+- **Grok**（Grok Build／relay 用的 Heavy 週池）→ 讀 `~/.cli-proxy-api/grok-quota-samples.jsonl` 最後一行，
+  producer 是 cliproxyapi-setup repo 的 `com.gggodlin.grok-quota` LaunchAgent（**不在本 repo**）
+- **Bot**（Grok Bot app 的額度）→ 讀 `~/.claude/cache/vendor-grok-bot-local.{json,status}`，
+  producer 是本 repo 的 `grok-bot-usage.mjs`，由 daemon 每 300 秒跑一次
+
+`grok-bot-usage.mjs` 從 Grok Bot app 的 `sand-secrets.json` 解出 Cursor access token（金鑰在鑰匙圈
+「Grok Bot Safe Storage」）打 `DashboardService/GetSandUsageStatus`。**只讀不刷新 token**——自己刷新會換掉
+refresh token、把 app 登出。所以 app 登出或 token 過期時會顯示 `Bot: http-401`，重新登入 app 即可。

@@ -17,6 +17,7 @@ WIDGETS=(
   "cpu|/Users/linhancheng/.claude/scripts/cc-statusline/cpu-usage.sh|5"
   "thermals|/Users/linhancheng/.claude/scripts/cc-statusline/thermals.sh|5"
   "runaway|/Users/linhancheng/.claude/scripts/cc-statusline/runaway.sh|10"
+  "grok-bot|/Users/linhancheng/.claude/scripts/cc-statusline/grok-bot-usage.mjs|300"
 )
 
 write_atomic() {

@@ -118,6 +118,7 @@ fmt_glm_countdown() {
 GLM_5H_PCT="" ; GLM_W_PCT="" ; GLM_LEVEL="" ; GLM_PILL_OUT="" ; GLM_PILL_BG=""
 CODEX_WEEKLY_REMAINING_PCT="" ; CODEX_WEEKLY_USED_PCT="" ; CODEX_WEEKLY_RESET_AT="" ; CODEX_PILL_OUT=""
 GROK_WEEKLY_USED_PCT="" ; GROK_WEEKLY_RESET_AT="" ; GROK_PILL_OUT=""
+GROK_BOT_USED_PCT="" ; GROK_BOT_RESET_AT="" ; GROK_BOT_OUT=""
 S1_BG=() ; S1_TX=() ; S2_BG=() ; S2_TX=() ; S3_BG=() ; S3_TX=()
 push_seg() {  # $1=line-no $2=bg $3=text
   eval "S${1}_BG[\${#S${1}_BG[@]}]=\$2 ; S${1}_TX[\${#S${1}_TX[@]}]=\$3"
@@ -755,6 +756,64 @@ fmt_grok_quota() {
   printf '%s' "$GROK_PILL_OUT"
 }
 
+# Grok Bot is a separate weekly pool; producer is grok-bot-usage.mjs on the daemon's 5-min cycle.
+fmt_grok_bot_quota() {
+  GROK_BOT_USED_PCT=""
+  GROK_BOT_RESET_AT=""
+  GROK_BOT_OUT=""
+
+  local json="$QUOTA_CACHE_DIR/vendor-grok-bot-local.json"
+  local status="$QUOTA_CACHE_DIR/vendor-grok-bot-local.status"
+  [[ ! -f "$json" && ! -f "$status" ]] && return
+
+  local fetched_at="" used_pct="" reset_at=""
+  if [[ -f "$json" ]]; then
+    local parsed
+    parsed=$(jq -er '
+      select(type == "object")
+      | select((.fetched_at | type) == "number")
+      | select((.data.used_percent | type) == "number" and .data.used_percent >= 0)
+      | select((.data.reset_at | type) == "number" and .data.reset_at > 0)
+      | [(.fetched_at | floor), (.data.used_percent | round), (.data.reset_at | floor)]
+      | @tsv
+    ' "$json" 2>/dev/null) || {
+      GROK_BOT_OUT="${RED}Bot: invalid cache${RST}"
+      printf '%s' "$GROK_BOT_OUT"
+      return
+    }
+    IFS=$'\t' read -r fetched_at used_pct reset_at <<<"$parsed"
+  fi
+
+  if [[ -f "$status" ]]; then
+    local failed_at reason
+    IFS=$'\t' read -r failed_at reason <<<"$(jq -er '
+      select((.failed_at | type) == "number" and (.reason | type) == "string" and (.reason | test("^[a-z0-9-]+$")))
+      | [(.failed_at | floor), .reason] | @tsv
+    ' "$status" 2>/dev/null)"
+    if [[ -n "${failed_at:-}" ]] && (( failed_at >= ${fetched_at:-0} )); then
+      GROK_BOT_OUT="${RED}Bot: ${reason}${RST}"
+      printf '%s' "$GROK_BOT_OUT"
+      return
+    fi
+  fi
+  [[ -z "$fetched_at" ]] && return
+
+  if (( $(date +%s) - fetched_at > 900 )); then
+    GROK_BOT_OUT="${RED}Bot: stale${RST}"
+    printf '%s' "$GROK_BOT_OUT"
+    return
+  fi
+
+  GROK_BOT_USED_PCT="$used_pct"
+  GROK_BOT_RESET_AT="$reset_at"
+
+  local color countdown
+  color=$(quota_pct_color "$used_pct")
+  countdown=$(fmt_glm_countdown "$(( reset_at * 1000 ))")
+  GROK_BOT_OUT="${BLUE}Bot: ${RST}${color}${used_pct}%${RST}${BLUE} · ${countdown}${RST}"
+  printf '%s' "$GROK_BOT_OUT"
+}
+
 usage_part=""
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
   usage_part=$(CC_SESSION_ID="$session_id" "$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
@@ -794,7 +853,14 @@ fmt_codex_quota >/dev/null 2>&1 || true
 [[ -n "$CODEX_PILL_OUT" ]] && push_seg 2 "$WT_BG_CODEX" "$CODEX_PILL_OUT"
 
 fmt_grok_quota >/dev/null 2>&1 || true
-[[ -n "$GROK_PILL_OUT" ]] && push_seg 2 "$WT_BG_GROK" "$GROK_PILL_OUT"
+fmt_grok_bot_quota >/dev/null 2>&1 || true
+grok_seg="$GROK_PILL_OUT"
+if [[ -n "$GROK_BOT_OUT" ]]; then
+  if [[ -n "$grok_seg" ]]; then grok_seg="${grok_seg}${BLUE} | ${RST}${GROK_BOT_OUT}"
+  else grok_seg="${BLUE}Grok ${RST}${GROK_BOT_OUT}"
+  fi
+fi
+[[ -n "$grok_seg" ]] && push_seg 2 "$WT_BG_GROK" "$grok_seg"
 
 # ----- Line 3 -----
 # context-bar
@@ -953,6 +1019,8 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg codex_weekly_reset_at "$CODEX_WEEKLY_RESET_AT" \
     --arg grok_weekly_used_pct "$GROK_WEEKLY_USED_PCT" \
     --arg grok_weekly_reset_at "$GROK_WEEKLY_RESET_AT" \
+    --arg grok_bot_used_pct "$GROK_BOT_USED_PCT" \
+    --arg grok_bot_reset_at "$GROK_BOT_RESET_AT" \
     --arg cache_hit   "${hit:-}" \
     --arg cache_flushes "${flushes:-0}" \
     --arg cache_waste "${waste:-0}" \

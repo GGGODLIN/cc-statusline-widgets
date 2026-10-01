@@ -312,6 +312,51 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     self.assertNotIn("Grok:", output)
 
+  def grok_bot_cache(self, *, used=0.33, fetched_at=None, reset_in=5400):
+    return {
+      "fetched_at": self.now if fetched_at is None else fetched_at,
+      "data": {"used_percent": used, "reset_at": self.now + reset_in}
+    }
+
+  def test_grok_bot_joins_build_in_one_pill(self):
+    self.write_grok_samples(self.grok_sample(pct=4.0, period_age=5400))
+    self.write_json("vendor-grok-bot-local.json", self.grok_bot_cache(used=12.6, reset_in=6 * 86400 + 5400))
+
+    output = self.run_wrapper()
+
+    self.assertIn("Grok: 4% · 6d22h | Bot: 13% · 6d1h", output)
+
+  def test_grok_bot_alone_keeps_grok_label(self):
+    self.write_json("vendor-grok-bot-local.json", self.grok_bot_cache())
+
+    output = self.run_wrapper()
+
+    self.assertIn("Grok Bot: 0% · 1h", output)
+
+  def test_grok_bot_newer_status_shows_reason(self):
+    self.write_json("vendor-grok-bot-local.json", self.grok_bot_cache(fetched_at=self.now - 10))
+    self.write_json("vendor-grok-bot-local.status", {"failed_at": self.now, "reason": "http-401"})
+
+    output = self.run_wrapper()
+
+    self.assertIn("Bot: http-401", output)
+    self.assertNotIn("Bot: 0%", output)
+
+  def test_grok_bot_older_status_is_ignored(self):
+    self.write_json("vendor-grok-bot-local.json", self.grok_bot_cache())
+    self.write_json("vendor-grok-bot-local.status", {"failed_at": self.now - 10, "reason": "http-401"})
+
+    output = self.run_wrapper()
+
+    self.assertIn("Bot: 0%", output)
+
+  def test_grok_bot_stale_cache_is_flagged(self):
+    self.write_json("vendor-grok-bot-local.json", self.grok_bot_cache(fetched_at=self.now - 901))
+
+    output = self.run_wrapper()
+
+    self.assertIn("Bot: stale", output)
+
   def test_gpt_precedes_grok_and_deepseek_is_gone(self):
     self.write_json("vendor-codex-local.json", self.codex_cache())
     self.write_grok_samples(self.grok_sample())
@@ -331,7 +376,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
     self.assertIn('WT_BG_CODEX=${WT_BG_CODEX:-${WT_BG_VENDOR_LEGACY:-${VL_BG_STYLE:-96}}}', source)
     self.assertIn('WT_BG_GROK=${WT_BG_GROK:-${WT_BG_VENDOR_LEGACY:-${VL_BG_CLOCK:-70,80,110}}}', source)
     self.assertIn('push_seg 2 "$WT_BG_CODEX" "$CODEX_PILL_OUT"', source)
-    self.assertIn('push_seg 2 "$WT_BG_GROK" "$GROK_PILL_OUT"', source)
+    self.assertIn('push_seg 2 "$WT_BG_GROK" "$grok_seg"', source)
 
   def test_widget_log_records_grok_fields(self):
     self.write_grok_samples(self.grok_sample(pct=7.9))
@@ -343,6 +388,18 @@ class WrapperQuotaContractTests(unittest.TestCase):
     entry = json.loads(log_path.read_text().splitlines()[-1])
     self.assertEqual(entry["grok_weekly_used_pct"], "7")
     self.assertEqual(entry["grok_weekly_reset_at"], str(self.now - 3600 + 604800))
+    self.assertEqual(entry["grok_bot_used_pct"], "")
+
+  def test_widget_log_records_grok_bot_fields(self):
+    self.write_json("vendor-grok-bot-local.json", self.grok_bot_cache(used=12.6))
+
+    self.run_wrapper(log=True)
+
+    month = datetime.now().strftime("%Y-%m")
+    log_path = self.home / ".claude" / "projects" / "widget-log" / f"{month}.jsonl"
+    entry = json.loads(log_path.read_text().splitlines()[-1])
+    self.assertEqual(entry["grok_bot_used_pct"], "13")
+    self.assertEqual(entry["grok_bot_reset_at"], str(self.now + 5400))
 
   def test_widget_log_has_exact_codex_fields_and_null_reset_values(self):
     self.write_json("vendor-codex-local.json", self.codex_cache(
