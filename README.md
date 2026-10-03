@@ -46,9 +46,8 @@ bash scripts/install.sh
       - model (stdin)                              ─ memory   (5s)  → free-memory.sh
       - session-cost (stdin cost.total_cost_usd)   ─ cpu      (5s)  → cpu-usage.sh
       - context-bar (stdin context_window)         ─ thermals (5s)  → thermals.sh (macmon)
-      - tokens-total (stdin current_usage 加總)
       - git-branch / ahead-behind (cwd)            另外 fork 一個 30s 背景 loop 跑 mactop
-      - session-clock (transcript first ts)        寫 .mactop-fan.json，給 thermals 讀風扇
+      - cache / tok/s / TTFT (transcript)          寫 .mactop-fan.json，給 thermals 讀風扇
 
                                                    寫到 /tmp/cc-widget-cache/<name>.txt
                                                    (atomic write via tmp+mv)
@@ -77,17 +76,18 @@ pill 上的 `[N old]` / `[⚠ N stale]` 是拿 cache 檔 mtime 算的，門檻�
 | Widget | 來源 | 狀態 |
 |---|---|---|
 | Model | stdin `.model.display_name` | ✅ |
-| Skill | (stub `Skill: -`) | ⚠️ known limitation — 第一版未做 |
+| Skill | `skill-hook.sh`（PreToolUse(Skill) + UserPromptSubmit hook）寫 per-session 檔 | ✅ |
 | Git branch + ahead/behind | git command（cwd from stdin） | ✅ |
 | Cost | stdin `.cost.total_cost_usd` | ✅ |
-| Session clock | transcript first timestamp | ✅（無 transcript 時 fallback `-`） |
 | Line 2 (optional external) | `~/.claude/scripts/usage-color.sh` if exists, else skipped | ✅ |
 | Context bar | stdin `.context_window.used_percentage` + 進度條 | ✅ |
-| Tokens total | stdin `.context_window.current_usage` 4 欄加總 | ✅ |
-| Free memory | daemon → vm_stat 算 free+inactive+spec | ✅ |
+| Cache 命中率 / 閒置 | transcript 最後一輪 cache token | ✅ |
+| tok/s + TTFT | transcript 時間戳與 thinkingDurationMs（見 widget-log 段） | ✅ |
+| Free memory | daemon → vm_stat 算 active+wired（htop 式） | ✅ |
 | Disk | daemon → `disk-usage.sh` (Container Free Space) | ✅ |
 | Battery | daemon → `cc-statusline-battery.sh` | ✅ |
 | Thermals (CPU/GPU 溫度 + 風扇 RPM) | daemon → `thermals.sh` (macmon + mactop cache) | ✅ |
+| Subagent 面板 | `subagent-panel.sh`（`subagentStatusLine`，見 CLAUDE.md） | ✅ |
 
 ### Cold start benchmark
 
@@ -109,8 +109,6 @@ rm -rf ~/.claude/scripts/cc-statusline
 
 ## 已知限制
 
-- **Skills widget** — stub `-`。要 reverse engineer ccstatusline `--hook` 機制（PreToolUse(Skill) + UserPromptSubmit 寫的 state file 在哪），第二版補。
-- **Session clock** — 從 transcript 第一行 timestamp 算，無 transcript 時 fallback `-`。CC 有時候 stdin 沒給 transcript_path（preview 模式）會看到。
 - **Hardcoded `/Users/linhancheng`** — daemon plist 跟 daemon.sh 寫死路徑。換機要重跑 install.sh，路徑不同會壞。
 
 ## Phase 進度
@@ -180,7 +178,7 @@ on screen. The whole point is "future analysis of indicators I cared about
 enough to display" — drift between screen and log destroys that signal.
 
 Schema (per JSONL line):
-`ts cwd session_id model cost cache_hit cache_flushes cache_waste tps tps_decode ttft ctx_pct ctx_tokens skill git_branch git_ab runaway cpu thermals free_mem disk battery line1 line2 line3`
+`ts cwd session_id model effort cost codex_weekly_remaining_pct codex_weekly_used_pct codex_weekly_reset_at grok_weekly_used_pct grok_weekly_reset_at grok_bot_used_pct grok_bot_reset_at cache_hit cache_flushes cache_waste cache_idle cache_compactions tps tps_decode ttft ctx_pct ctx_tokens skill subagents git_branch git_ab runaway cpu thermals free_mem disk battery line1 line2 line3`
 
 `tps` is the median end-to-end output speed (tok/s) of the current model's
 last 5 responses of ≥200 tokens: a number, `--` when fewer than 2 qualify,
