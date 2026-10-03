@@ -811,7 +811,7 @@ fmt_codex_quota() {
     local countdown reset_ms
     reset_ms=$(( reset_at * 1000 ))
     countdown=$(fmt_glm_countdown "$reset_ms")
-    CODEX_PILL_OUT="${BLUE}GPT: ${RST}${color}${used_pct}%${RST}${BLUE} · ${countdown}${RST}"
+    CODEX_PILL_OUT="${BLUE}GPT: ${RST}${color}${used_pct}%${RST}${BLUE} ${countdown}${RST}"
   else
     CODEX_PILL_OUT="${BLUE}GPT: ${RST}${color}${used_pct}%${RST}"
   fi
@@ -856,7 +856,7 @@ fmt_grok_quota() {
   local color countdown
   color=$(quota_pct_color "$used_pct")
   countdown=$(fmt_glm_countdown "$(( reset_at * 1000 ))")
-  GROK_PILL_OUT="${BLUE}Grok: ${RST}${color}${used_pct}%${RST}${BLUE} · ${countdown}${RST}"
+  GROK_PILL_OUT="${BLUE}Grok: ${RST}${color}${used_pct}%${RST}${BLUE} ${countdown}${RST}"
   printf '%s' "$GROK_PILL_OUT"
 }
 
@@ -914,7 +914,7 @@ fmt_grok_bot_quota() {
   local color countdown
   color=$(quota_pct_color "$used_pct")
   countdown=$(fmt_glm_countdown "$(( reset_at * 1000 ))")
-  GROK_BOT_OUT="${BLUE}Bot: ${RST}${color}${used_pct}%${RST}${BLUE} · ${countdown}${RST}"
+  GROK_BOT_OUT="${BLUE}Bot: ${RST}${color}${used_pct}%${RST}${BLUE} ${countdown}${RST}"
   printf '%s' "$GROK_BOT_OUT"
 }
 

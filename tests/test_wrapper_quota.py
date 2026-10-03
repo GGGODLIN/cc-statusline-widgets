@@ -123,7 +123,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     output = self.run_wrapper()
 
-    self.assertIn("GPT: 20% · ", output)
+    self.assertIn("GPT: 20% ", output)
     self.assertNotIn("GPT: 99%", output)
     self.assertNotIn("legacy-error", output)
 
@@ -185,7 +185,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     output = self.run_wrapper()
 
-    self.assertIn("GPT: 20% · ", output)
+    self.assertIn("GPT: 20% ", output)
     self.assertNotIn("old-error", output)
 
   def test_codex_stale_cache_shows_stale(self):
@@ -289,7 +289,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
     output = self.run_wrapper()
 
     # period started 1.5h ago, so the weekly reset is 6d22h30m away
-    self.assertIn("Grok: 4% · 6d22h", output)
+    self.assertIn("Grok: 4% 6d22h", output)
     self.assertNotIn("99%", output)
 
   def test_grok_stale_sample_is_flagged(self):
@@ -324,14 +324,14 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     output = self.run_wrapper()
 
-    self.assertIn("Grok: 4% · 6d22h | Bot: 13% · 6d1h", output)
+    self.assertIn("Grok: 4% 6d22h | Bot: 13% 6d1h", output)
 
   def test_grok_bot_alone_keeps_grok_label(self):
     self.write_json("vendor-grok-bot-local.json", self.grok_bot_cache())
 
     output = self.run_wrapper()
 
-    self.assertIn("Grok Bot: 0% · 1h", output)
+    self.assertIn("Grok Bot: 0% 1h", output)
 
   def test_grok_bot_newer_status_shows_reason(self):
     self.write_json("vendor-grok-bot-local.json", self.grok_bot_cache(fetched_at=self.now - 10))
