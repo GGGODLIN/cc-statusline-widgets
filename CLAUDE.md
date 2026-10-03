@@ -56,6 +56,18 @@ statusline 再報一次是重複。panel 在跑完後會消失，累計總量才
 `🪄 -` 變成兩個並排空槓。`🤖 ?`（腳本失敗的 fallback）照常顯示——那是故障訊號、不能藏。
 `$subagents_fmt` 本身不變，widget-log 仍記錄原始值，指標歷史不漂移。
 
+## Subagent 面板（`subagent-panel.sh`）改寫 CC 原生面板的每一列
+
+`~/.claude/settings.json` 的 `subagentStatusLine` 指向部署版 `subagent-panel.sh`（**這在 repo 外**，重裝機器要另外補）。
+它只改寫 `local_agent` 列，其他列和腳本沒輸出的情況都保留 CC 原生畫法，所以腳本壞掉時面板會退回原樣、不會整塊消失。
+
+讀 CC 2.1.288 原始碼得知、改之前要知道的事：
+
+- CC 每 5 秒才重跑一次（寫死、沒有設定可調），所以 `⧖` 讀秒是 5 秒一跳；原生面板的讀秒是每秒跳
+- 改寫後原生的名稱、描述、讀秒、token 數全部被取代，只剩最左邊的箭頭、樹狀線和狀態圓點
+- `tokenCount` 是「最近一次輸入量＋累計輸出＋正在輸出的估計」，不會在每次回答後歸 0；`+N` 用 `tokenSamples`（每 5 秒一筆）最後兩筆相減
+- payload 的 `effort` 是設定值；實際送出的 effort 要讀 `subagents/agent-<id>.jsonl` 第一筆 assistant，角色名讀同目錄 `.meta.json` 的 `agentType`
+
 ## 改 daemon-side script 要 restart daemon
 
 daemon 5s cycle 才 reload，改 `daemon.sh` 的 `WIDGETS` array 後 `install.sh` 會 bootout/bootstrap。

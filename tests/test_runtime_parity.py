@@ -17,6 +17,7 @@ class RuntimeParityTest(unittest.TestCase):
       REPO / "scripts/skill-hook.sh": RUNTIME / "skill-hook.sh",
       REPO / "scripts/runaway.sh": RUNTIME / "runaway.sh",
       REPO / "scripts/subagent-count.sh": RUNTIME / "subagent-count.sh",
+      REPO / "scripts/subagent-panel.sh": RUNTIME / "subagent-panel.sh",
       REPO / "scripts/grok-bot-usage.mjs": RUNTIME / "grok-bot-usage.mjs",
       REPO / "scripts/usage-color.sh": Path.home() / ".claude/scripts/usage-color.sh",
     }
