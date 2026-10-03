@@ -63,13 +63,15 @@ class WrapperTpsTests(unittest.TestCase):
 
     self.assertIn("⚡60 t/s", self.run_wrapper())
 
-  def test_slow_speed_is_flagged(self):
+  def test_slow_speed_has_no_warning_marker(self):
     self.write_transcript([
       ("gpt-6.1-sol", 400, 20),
       ("gpt-6.1-sol", 400, 20),
     ])
 
-    self.assertIn("⚡⚠20 t/s", self.run_wrapper())
+    output = self.run_wrapper()
+    self.assertIn("⚡20 t/s", output)
+    self.assertNotIn("⚠20", output)
 
   def test_no_transcript_hides_speed(self):
     output = self.run_wrapper()

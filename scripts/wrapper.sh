@@ -420,11 +420,8 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     fi
   fi
   [[ "$tps" == "none" ]] && tps=""
-  if [[ "$tps" =~ ^[0-9]+$ ]]; then
-    # 50 sits below the slowest quarter of Opus 5.5 over 09-30..10-03 (~60).
-    if (( tps < 50 )); then tps_fmt="⚡⚠${tps} t/s"; else tps_fmt="⚡${tps} t/s"; fi
-  elif [[ "$tps" == "--" ]]; then
-    tps_fmt="⚡-- t/s"
+  if [[ "$tps" =~ ^[0-9]+$ || "$tps" == "--" ]]; then
+    tps_fmt="⚡${tps} t/s"
   fi
 fi
 
