@@ -474,18 +474,27 @@ cwd=$(jqr '.workspace.current_dir // .cwd // ""')
 git_branch_fmt="⎇ no git"
 git_ab_fmt="(no git)"
 git_dirty=0
-if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  branch=$(git symbolic-ref --short HEAD 2>/dev/null || git rev-parse --short HEAD 2>/dev/null || echo "?")
-  git_marks=$(git status --porcelain 2>/dev/null | awk '
-    /^\?\?/ { u=1; next }
-    { if (substr($0,1,1) != " ") s=1; if (substr($0,2,1) != " ") m=1 }
-    END { printf "%s%s%s", (s?"+":""), (m?"!":""), (u?"?":"") }')
+# One porcelain v2 call yields branch, upstream, ahead/behind and dirty marks (single call
+# from coralline). GIT_OPTIONAL_LOCKS=0 stops status from refreshing .git/index under
+# index.lock, which at a 1s refresh collided with commits run in the same second.
+if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null \
+   && git_status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v2 --branch 2>/dev/null); then
+  # \037, not a tab: read collapses runs of whitespace IFS, so an empty marks field would vanish.
+  IFS=$'\037' read -r branch git_marks upstream ahead behind < <(awk '
+    /^# branch\.oid /      { oid = substr($3, 1, 7) }
+    /^# branch\.head /     { head = $3 }
+    /^# branch\.upstream / { up = $3 }
+    /^# branch\.ab /       { a = substr($3, 2); b = substr($4, 2) }
+    /^[12] / { if (substr($2,1,1) != ".") s=1; if (substr($2,2,1) != ".") m=1 }
+    /^u /    { m=1 }
+    /^\? /   { u=1 }
+    END {
+      if (head == "(detached)" || head == "") head = (oid == "(initial)" || oid == "") ? "?" : oid
+      printf "%s\037%s\037%s\037%s\037%s\n", head, (s?"+":"") (m?"!":"") (u?"?":""), up, a+0, b+0
+    }' <<<"$git_status")
   [[ -n "$git_marks" ]] && git_dirty=1
   git_branch_fmt="⎇ ${branch}${git_marks}"
-  upstream=$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)
   if [[ -n "$upstream" ]]; then
-    ahead=$(git rev-list --count "$upstream"..HEAD 2>/dev/null || echo 0)
-    behind=$(git rev-list --count HEAD.."$upstream" 2>/dev/null || echo 0)
     git_ab_fmt=""
     (( ahead > 0 ))  && git_ab_fmt="⇡${ahead}"
     (( behind > 0 )) && git_ab_fmt="${git_ab_fmt}⇣${behind}"
