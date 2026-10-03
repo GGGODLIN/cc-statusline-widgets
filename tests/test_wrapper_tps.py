@@ -43,7 +43,7 @@ class WrapperTpsTests(unittest.TestCase):
       ("claude-opus-5-5", 900, 10),
     ])
 
-    self.assertIn("◆ Test (high) ⚡ 80 t/s", self.run_wrapper())
+    self.assertIn("◆ Test (high) ⚡80 t/s", self.run_wrapper())
 
   def test_short_responses_are_ignored_and_too_few_samples_show_dashes(self):
     self.write_transcript([
@@ -51,7 +51,7 @@ class WrapperTpsTests(unittest.TestCase):
       ("claude-opus-5-5", 50, 10),
     ])
 
-    self.assertIn("◆ Test (high) ⚡ -- t/s", self.run_wrapper())
+    self.assertIn("◆ Test (high) ⚡-- t/s", self.run_wrapper())
 
   def test_only_the_latest_model_counts_after_a_switch(self):
     self.write_transcript([
@@ -61,7 +61,7 @@ class WrapperTpsTests(unittest.TestCase):
       ("claude-opus-5-5", 600, 10),
     ])
 
-    self.assertIn("⚡ 60 t/s", self.run_wrapper())
+    self.assertIn("⚡60 t/s", self.run_wrapper())
 
   def test_slow_speed_is_flagged(self):
     self.write_transcript([
@@ -69,7 +69,7 @@ class WrapperTpsTests(unittest.TestCase):
       ("gpt-6.1-sol", 400, 20),
     ])
 
-    self.assertIn("⚡ ⚠20 t/s", self.run_wrapper())
+    self.assertIn("⚡⚠20 t/s", self.run_wrapper())
 
   def test_no_transcript_hides_speed(self):
     output = self.run_wrapper()
