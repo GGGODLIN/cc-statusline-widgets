@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # preview-themes.sh — render wrapper.sh with synthetic stdin across all themes.
 # Run directly in your terminal (colors + Nerd Font glyphs render there):
-#   bash scripts/preview-themes.sh
+#   bash scripts/preview-themes.sh              # every theme, plus style and wrap demos
+#   bash scripts/preview-themes.sh nord dracula # just these themes
 set -uo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd)
@@ -36,10 +37,19 @@ run() {  # $1=conf-content $2=cols
   rm -f "$conf"
 }
 
-for theme in claude-coral catppuccin-mocha nord gruvbox-dark tokyo-night mono; do
+themes=("$@")
+if (( ${#themes[@]} == 0 )); then
+  for f in "$REPO"/themes/*.conf; do
+    [[ "$f" == *.example ]] || themes+=("$(basename "$f" .conf)")
+  done
+fi
+
+for theme in "${themes[@]}"; do
   printf '\n\033[1m── %s (pill / fixed)\033[0m\n' "$theme"
   run "WT_THEME=$theme" 220
 done
+# Named themes only: the style and wrap demos below would bury them.
+(( $# > 0 )) && exit 0
 
 printf '\n\033[1m── claude-coral (lean style)\033[0m\n'
 run $'WT_THEME=claude-coral\nWT_STYLE=lean' 220
