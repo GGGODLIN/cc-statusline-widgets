@@ -373,6 +373,61 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
   fi
 fi
 
+# output speed: median tok/s of the last 5 responses from the current model.
+# End-to-end (includes time to first token), so it reads lower than vendor
+# figures. Subagents live in their own transcripts and never reach this file.
+tps=""
+tps_fmt=""
+if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
+  tps_memo="$CACHE_DIR/tps-widget-${transcript_path##*/}.memo"
+  if [[ -n "$t_stat" && -f "$tps_memo" ]]; then
+    { read -r memo_stat; read -r memo_data; } < "$tps_memo"
+    [[ "$memo_stat" == "$t_stat" ]] && tps="$memo_data"
+  fi
+  if [[ -z "$tps" ]]; then
+    # tail keeps the cost flat on long sessions; 2000 lines spans far more than 5 responses.
+    tps=$(tail -n 2000 "$transcript_path" | jq -Rnr '
+      def ep: sub("Z$"; "") | split(".")
+        | ((.[0] + "Z") | fromdateiso8601) + (("0." + (.[1] // "0")) | tonumber);
+      [inputs | fromjson? | select(.timestamp)]
+      | reduce .[] as $e ({req: null, m: {}, order: []};
+          if $e.type == "user" then .req = ($e.timestamp | ep)
+          elif $e.type == "assistant" and ($e.message.id // "") != ""
+               and ($e.message.model // "<synthetic>") != "<synthetic>" then
+            ($e.timestamp | ep) as $t | $e.message.id as $id
+            | (if .m[$id] == null
+               then .m[$id] = {model: $e.message.model, start: .req, end: $t, out: 0} | .order += [$id]
+               else . end)
+            | .m[$id].end = ([.m[$id].end, $t] | max)
+            | .m[$id].out = ([.m[$id].out, ($e.message.usage.output_tokens // 0)] | max)
+          else . end)
+      | . as $s | [$s.order[] | $s.m[.]]
+      | if length == 0 then "none" else
+          (last.model) as $cur
+          # <200 tokens is mostly time-to-first-token, which would drag the median down.
+          | [.[] | select(.model == $cur and .start != null and .out >= 200)
+              | (.end - .start) as $d | select($d > 0.5 and $d <= 900) | .out / $d]
+          | .[-5:] | sort
+          | if length < 2 then "--"
+            elif length % 2 == 1 then .[length / 2 | floor] | floor
+            else (.[length / 2 - 1] + .[length / 2]) / 2 | floor end
+        end
+    ' 2>/dev/null)
+    if [[ -n "$t_stat" && -n "$tps" && -d "$CACHE_DIR" ]]; then
+      memo_tmp=$(mktemp "$CACHE_DIR/.tps-widget.XXXXXX" 2>/dev/null) &&
+        printf '%s\n%s\n' "$t_stat" "$tps" > "$memo_tmp" &&
+        mv "$memo_tmp" "$tps_memo"
+    fi
+  fi
+  [[ "$tps" == "none" ]] && tps=""
+  if [[ "$tps" =~ ^[0-9]+$ ]]; then
+    # 50 sits below the slowest quarter of Opus 5.5 over 09-30..10-03 (~60).
+    if (( tps < 50 )); then tps_fmt="⚡ ⚠${tps} t/s"; else tps_fmt="⚡ ${tps} t/s"; fi
+  elif [[ "$tps" == "--" ]]; then
+    tps_fmt="⚡ -- t/s"
+  fi
+fi
+
 session_cost_usd=$(jqr '.cost.total_cost_usd // 0')
 session_cost_fmt=$(awk -v c="$session_cost_usd" 'BEGIN { printf "$%.2f", c }')
 
@@ -419,6 +474,7 @@ subagents_fmt=$("$SCRIPT_DIR/subagent-count.sh" "$transcript_path" 2>/dev/null)
 [[ -n "$runaway" ]] && push_seg 1 "$WT_BG_RUNAWAY" "$runaway"
 model_pill_text="◆ ${model_name}"
 [[ -n "$effort_level" ]] && model_pill_text="${model_pill_text} (${effort_level})"
+[[ -n "$tps_fmt" ]] && model_pill_text="${model_pill_text} ${tps_fmt}"
 push_seg 1 "$WT_BG_MODEL" "${BOLD}${model_pill_text}${NORM}"
 [[ -n "$cache_hit_fmt" ]] && push_seg 1 "$WT_BG_CACHE" "$cache_hit_fmt"
 push_seg 1 "$WT_BG_SKILL" "$skills_fmt"
@@ -1026,6 +1082,7 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg cache_waste "${waste:-0}" \
     --arg cache_idle  "${idle:-}" \
     --arg cache_compactions "${compactions:-0}" \
+    --arg tps         "$tps" \
     --arg ctx_pct     "$ctx_used_pct" \
     --arg ctx_tokens  "$ctx_used_tokens" \
     --arg skill       "$skill_name" \

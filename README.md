@@ -180,7 +180,11 @@ on screen. The whole point is "future analysis of indicators I cared about
 enough to display" — drift between screen and log destroys that signal.
 
 Schema (per JSONL line):
-`ts cwd session_id model cost cache_hit cache_flushes cache_waste ctx_pct ctx_tokens skill git_branch git_ab runaway cpu thermals free_mem disk battery line1 line2 line3`
+`ts cwd session_id model cost cache_hit cache_flushes cache_waste tps ctx_pct ctx_tokens skill git_branch git_ab runaway cpu thermals free_mem disk battery line1 line2 line3`
+
+`tps` is the median end-to-end output speed (tok/s) of the current model's
+last 5 responses of ≥200 tokens: a number, `--` when fewer than 2 qualify,
+or empty without a transcript.
 
 `line1/2/3` retain ANSI escapes for full statusline replay. All numeric
 fields are stored as strings — convert with `jq tonumber` when querying.
