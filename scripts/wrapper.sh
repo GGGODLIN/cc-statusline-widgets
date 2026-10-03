@@ -522,7 +522,8 @@ subagents_fmt=$("$SCRIPT_DIR/subagent-count.sh" "$transcript_path" 2>/dev/null)
 model_pill_text="◆ ${model_name}"
 [[ -n "$effort_level" ]] && model_pill_text="${model_pill_text} (${effort_level})"
 [[ -n "$tps_fmt" ]] && model_pill_text="${model_pill_text} ${tps_fmt}"
-push_seg 1 "$WT_BG_MODEL" "${BOLD}${model_pill_text}${NORM}"
+# WT_FG_MODEL: ink for this pill alone, for a light WT_BG_MODEL under a theme whose text is light.
+push_seg 1 "$WT_BG_MODEL" "${WT_FG_MODEL:+$(fg "$WT_FG_MODEL")}${BOLD}${model_pill_text}${NORM}"
 [[ -n "$cache_hit_fmt" ]] && push_seg 1 "$WT_BG_CACHE" "$cache_hit_fmt"
 push_seg 1 "$WT_BG_SKILL" "$skills_fmt"
 [[ "$subagents_fmt" != "🤖 -" ]] && push_seg 1 "$WT_BG_AGENTS" "$subagents_fmt"

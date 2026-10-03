@@ -1,7 +1,7 @@
 # cc-statusline-widgets theme config
 # 複製到 ~/.claude/cc-widgets-theme.conf 後修改（plain bash，被 wrapper source）
 
-WT_THEME="claude-coral"   # claude-coral | catppuccin-mocha | nord | gruvbox-dark | tokyo-night | mono
+WT_THEME="claude-coral"   # claude-coral | catppuccin-mocha | nord | gruvbox-dark | tokyo-night | mono | dracula | lunar-pink | reverie | morning-haze
 WT_STYLE="pill"           # pill: powerline 藥丸 | lean: 無背景純色文字
 WT_LAYOUT="fixed"         # fixed: 固定三行（語意分組）| auto: 單流貪婪換行
 WT_MAX_LINES=3            # auto 模式最多折成幾行
@@ -9,6 +9,7 @@ WT_BAR_WIDTH=10           # ctx 量條寬度
 
 # 進階：覆寫個別 widget 背景色（256 色編號或 "R,G,B"）
 # WT_BG_MODEL=173
+# WT_FG_MODEL="42,49,66"   # 只改 model pill 的字色；淺色 WT_BG_MODEL 配深色字時用
 # WT_BG_CACHE=237
 # WT_BG_SKILL=96
 # WT_BG_GIT_OK=65
