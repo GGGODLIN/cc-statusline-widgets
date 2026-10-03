@@ -191,7 +191,7 @@ responses that open with a streamed thinking block (thinking logged at ≥2ms);
 `ttft` is the median wait in seconds before the first token. For models whose
 thinking block lands whole (logged at ~1ms, e.g. gpt via the relay)
 `tps_decode` stays empty and `ttft` is the wait until that block landed. The
-pill shows `⚡<tps_decode> t/s ⏱<ttft>s`, or `⚡<tps> t/s ⏱<ttft>s` for the
+pill shows `⚡<tps_decode> t/s ⏱ <ttft>s`, or `⚡<tps> t/s ⏱ <ttft>s` for the
 landed-whole case, and hides when neither applies.
 
 `line1/2/3` retain ANSI escapes for full statusline replay. All numeric

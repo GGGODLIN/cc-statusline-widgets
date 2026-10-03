@@ -61,12 +61,12 @@ class WrapperTpsTests(unittest.TestCase):
       ("claude-opus-5-5", 900, 10, 2, 1),
     ])
 
-    self.assertIn("◆ Test (high) ⚡100 t/s ⏱2.0s", self.run_wrapper())
+    self.assertIn("◆ Test (high) ⚡100 t/s ⏱ 2.0s", self.run_wrapper())
 
   def test_long_wait_shows_whole_seconds(self):
     self.write_transcript([("gpt-6-astra", 400, 30, 19, 1)])
 
-    self.assertIn("⚡36 t/s ⏱19s", self.run_wrapper())
+    self.assertIn("⚡36 t/s ⏱ 19s", self.run_wrapper())
 
   def test_responses_without_thinking_hide_speed(self):
     self.write_transcript([
@@ -93,7 +93,7 @@ class WrapperTpsTests(unittest.TestCase):
       ("gpt-6-astra", 600, 20, 8, 0.001),
     ])
 
-    self.assertIn("◆ Test (high) ⚡25 t/s ⏱8.0s", self.run_wrapper())
+    self.assertIn("◆ Test (high) ⚡25 t/s ⏱ 8.0s", self.run_wrapper())
 
   def test_streamed_thinking_wins_over_batched(self):
     self.write_transcript([
@@ -101,7 +101,7 @@ class WrapperTpsTests(unittest.TestCase):
       ("grok-4.7-build", 600, 10, 2, 1),
     ])
 
-    self.assertIn("⚡75 t/s ⏱2.0s", self.run_wrapper())
+    self.assertIn("⚡75 t/s ⏱ 2.0s", self.run_wrapper())
 
   def test_widget_log_records_batched_wait_without_decode(self):
     self.write_transcript([
@@ -122,7 +122,7 @@ class WrapperTpsTests(unittest.TestCase):
       ("claude-opus-5-5", 600, 10, 2, 1),
     ])
 
-    self.assertIn("⚡75 t/s ⏱2.0s", self.run_wrapper())
+    self.assertIn("⚡75 t/s ⏱ 2.0s", self.run_wrapper())
 
   def test_slow_speed_has_no_warning_marker(self):
     self.write_transcript([("gpt-6.1-sol", 400, 30, 19, 1)])

@@ -462,7 +462,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
   fi
   if [[ -n "$tps_shown" ]]; then
     tps_fmt="⚡${tps_shown} t/s"
-    [[ -n "$ttft" ]] && tps_fmt="${tps_fmt} ⏱${ttft}s"
+    [[ -n "$ttft" ]] && tps_fmt="${tps_fmt} ⏱ ${ttft}s"
   fi
 fi
 
