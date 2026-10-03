@@ -373,22 +373,37 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
   fi
 fi
 
-# output speed: median tok/s of the last 5 responses from the current model.
-# End-to-end (includes time to first token), so it reads lower than vendor
-# figures. Subagents live in their own transcripts and never reach this file.
+# output speed: medians over the last 5 responses from the current model.
+# The pill shows decode speed (first token → last) plus time to first token, so a
+# slow vendor reads as "long wait" instead of "slow writer"; the end-to-end figure
+# (wait included) only goes to widget-log, keeping the tps history comparable.
+# Decode needs the response to open with a thinking block: CC stamps that line when
+# thinking ends and records thinkingDurationMs on it, which is the only way back to
+# the first token. Responses opening with text or a tool call have no such mark, so
+# they don't count, and the pill hides when none qualify (method from coralline).
+# A thinking block logged at ~1ms was delivered whole (gpt via the relay): see the jq.
+# Subagents live in their own transcripts and never reach this file.
 tps=""
+tps_decode=""
+ttft=""
+tps_shown=""
 tps_fmt=""
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-  tps_memo="$CACHE_DIR/tps-widget-${transcript_path##*/}.memo"
+  # tps2: the memo line changed from one number to three; the old name would feed stale lines in.
+  tps_memo="$CACHE_DIR/tps2-widget-${transcript_path##*/}.memo"
+  tps_data=""
   if [[ -n "$t_stat" && -f "$tps_memo" ]]; then
     { read -r memo_stat; read -r memo_data; } < "$tps_memo"
-    [[ "$memo_stat" == "$t_stat" ]] && tps="$memo_data"
+    [[ "$memo_stat" == "$t_stat" ]] && tps_data="$memo_data"
   fi
-  if [[ -z "$tps" ]]; then
+  if [[ -z "$tps_data" ]]; then
     # tail keeps the cost flat on long sessions; 2000 lines spans far more than 5 responses.
-    tps=$(tail -n 2000 "$transcript_path" | jq -Rnr '
+    tps_data=$(tail -n 2000 "$transcript_path" | jq -Rnr '
       def ep: sub("Z$"; "") | split(".")
         | ((.[0] + "Z") | fromdateiso8601) + (("0." + (.[1] // "0")) | tonumber);
+      def med: sort | if length == 0 then null
+        elif length % 2 == 1 then .[length / 2 | floor]
+        else (.[length / 2 - 1] + .[length / 2]) / 2 end;
       [inputs | fromjson? | select(.timestamp)]
       | reduce .[] as $e ({req: null, m: {}, order: []};
           if $e.type == "user" then .req = ($e.timestamp | ep)
@@ -396,7 +411,10 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
                and ($e.message.model // "<synthetic>") != "<synthetic>" then
             ($e.timestamp | ep) as $t | $e.message.id as $id
             | (if .m[$id] == null
-               then .m[$id] = {model: $e.message.model, start: .req, end: $t, out: 0} | .order += [$id]
+               then .m[$id] = {model: $e.message.model, start: .req, end: $t, out: 0,
+                   first: $t, think: ($e.thinkingDurationMs // null),
+                   block: ($e.message.content | if type == "array" then (.[0].type // null) else null end)}
+                 | .order += [$id]
                else . end)
             | .m[$id].end = ([.m[$id].end, $t] | max)
             | .m[$id].out = ([.m[$id].out, ($e.message.usage.output_tokens // 0)] | max)
@@ -406,22 +424,45 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
           (last.model) as $cur
           # <200 tokens is mostly time-to-first-token, which would drag the median down.
           | [.[] | select(.model == $cur and .start != null and .out >= 200)
-              | (.end - .start) as $d | select($d > 0.5 and $d <= 900) | .out / $d]
-          | .[-5:] | sort
-          | if length < 2 then "--"
-            elif length % 2 == 1 then .[length / 2 | floor] | floor
-            else (.[length / 2 - 1] + .[length / 2]) / 2 | floor end
+              | .d = (.end - .start) | select(.d > 0.5 and .d <= 900)] as $ok
+          | ([$ok[] | .out / .d] | .[-5:]) as $e2e
+          | ([$ok[] | select(.block == "thinking" and (.think // 0) >= 2)
+              | (.first - .think / 1000) as $tf
+              | select($tf >= .start and .end > $tf)
+              | {dec: (.out / (.end - $tf)), ttft: ($tf - .start)}] | .[-5:]) as $dt
+          # gpt (and gemini) through the relay land the whole thinking block at once, logged
+          # as ~1ms: its landing is the first thing on screen, but reasoning tokens were
+          # generated during the wait, so decode would read high — overall speed is used instead.
+          | ([$ok[] | select(.block == "thinking" and (.think // 0) < 2)
+              | (.first - .start) | select(. >= 0)] | .[-5:]) as $bt
+          | [ (if ($e2e | length) < 2 then "--" else ($e2e | med | floor) end),
+              (if ($dt | length) == 0 then "-" else ([$dt[].dec] | med | floor) end),
+              (if ($dt | length) > 0 then ([$dt[].ttft] | med)
+               elif ($bt | length) > 0 then ($bt | med) else "-" end),
+              (if ($dt | length) > 0 then ([$dt[].dec] | med | floor)
+               elif ($bt | length) > 0 and ($e2e | length) > 0 then ($e2e | med | floor) else "-" end) ]
+          | map(tostring) | join(" ")
         end
     ' 2>/dev/null)
-    if [[ -n "$t_stat" && -n "$tps" && -d "$CACHE_DIR" ]]; then
+    if [[ -n "$t_stat" && -n "$tps_data" && -d "$CACHE_DIR" ]]; then
       memo_tmp=$(mktemp "$CACHE_DIR/.tps-widget.XXXXXX" 2>/dev/null) &&
-        printf '%s\n%s\n' "$t_stat" "$tps" > "$memo_tmp" &&
+        printf '%s\n%s\n' "$t_stat" "$tps_data" > "$memo_tmp" &&
         mv "$memo_tmp" "$tps_memo"
     fi
   fi
-  [[ "$tps" == "none" ]] && tps=""
-  if [[ "$tps" =~ ^[0-9]+$ || "$tps" == "--" ]]; then
-    tps_fmt="⚡${tps} t/s"
+  if [[ -n "$tps_data" && "$tps_data" != "none" ]]; then
+    read -r tps tps_decode ttft tps_shown <<<"$tps_data"
+    [[ "$tps_decode" =~ ^[0-9]+$ ]] || tps_decode=""
+    [[ "$tps_shown" =~ ^[0-9]+$ ]] || tps_shown=""
+    if [[ "$ttft" =~ ^[0-9.]+$ ]]; then
+      ttft=$(awk -v s="$ttft" 'BEGIN { if (s < 10) printf "%.1f", s; else printf "%d", s + 0.5 }')
+    else
+      ttft=""
+    fi
+  fi
+  if [[ -n "$tps_shown" ]]; then
+    tps_fmt="⚡${tps_shown} t/s"
+    [[ -n "$ttft" ]] && tps_fmt="${tps_fmt} ⏱${ttft}s"
   fi
 fi
 
@@ -1080,6 +1121,8 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg cache_idle  "${idle:-}" \
     --arg cache_compactions "${compactions:-0}" \
     --arg tps         "$tps" \
+    --arg tps_decode  "$tps_decode" \
+    --arg ttft        "$ttft" \
     --arg ctx_pct     "$ctx_used_pct" \
     --arg ctx_tokens  "$ctx_used_tokens" \
     --arg skill       "$skill_name" \
