@@ -27,8 +27,9 @@ VL_FG_DIM=${VL_FG_DIM:-245}
 VL_FG_OK=${VL_FG_OK:-114}
 VL_FG_WARN=${VL_FG_WARN:-179}
 VL_FG_HOT=${VL_FG_HOT:-167}
-# same palette slots wrapper.sh uses for name / model / context / agents
+# same palette slots wrapper.sh uses: ctx / system / model / quota / agents
 WT_BG_TITLE=${WT_BG_CTX:-${VL_BG_CTX:-238}}
+WT_BG_LABEL=${WT_BG_SYS:-${VL_BG_LINES:-240}}
 WT_BG_MODEL=${WT_BG_MODEL:-${VL_BG_MODEL:-173}}
 WT_BG_USAGE=${WT_BG_USAGE:-${VL_BG_7D:-236}}
 WT_BG_AGENTS=${WT_BG_AGENTS:-${VL_BG_AGENTS:-${VL_BG_DURATION:-60}}}
@@ -223,9 +224,10 @@ while IFS=$'\037' read -r id status name label model effort cws tok start delta 
   SEG_MODEL+=("$seg_model") ; SEG_CTX_BAR+=("$seg_bar") ; SEG_CTX+=("$seg_ctx") ; SEG_TAIL+=("$tail")
 done <<<"$fields"
 
-build() {  # $1=row index $2=1 for the barred context → RB/RT, title left as a 1-col placeholder
+build() {  # $1=row index $2=1 for the barred context → RB/RT; the label pill is a 1-col placeholder
   local i=$1
-  RB=("$WT_BG_TITLE") ; RT=("X")
+  RB=("$WT_BG_TITLE") ; RT=("$(fg "${TITLE_FG[i]}")${BOLD}${TITLE_ROLE[i]}${NORM}")
+  [[ -n "${TITLE_LABEL[i]}" ]] && { RB+=("$WT_BG_LABEL"); RT+=("X"); }
   [[ -n "${SEG_MODEL[i]}" ]] && { RB+=("$WT_BG_MODEL"); RT+=("${SEG_MODEL[i]}"); }
   if (( $2 )); then
     [[ -n "${SEG_CTX_BAR[i]}" ]] && { RB+=("$WT_BG_USAGE"); RT+=("${SEG_CTX_BAR[i]}"); }
@@ -235,40 +237,44 @@ build() {  # $1=row index $2=1 for the barred context → RB/RT, title left as a
   [[ -n "${SEG_TAIL[i]}" ]] && { RB+=("$WT_BG_AGENTS"); RT+=("${SEG_TAIL[i]}"); }
 }
 
-room_for_title() {  # width left for the title once the other pills are laid out
-  local w
-  w=$(textw "$(render_range 0 $(( ${#RB[@]} - 1 )))")
-  printf '%d' $(( panel_cols - w ))  # the placeholder's 1 col doubles as a right margin
-}
+row_width() { textw "$(render_range 0 $(( ${#RB[@]} - 1 )))"; }
 
-# One bar decision for the whole panel, so rows don't disagree with each other.
+# One bar decision for the whole panel, so rows don't disagree with each other. The role pill
+# plus whatever is left for the label must reach PANEL_MIN_TITLE; the placeholder's 1 col
+# doubles as a right margin.
 use_bar=1
 if (( panel_cols > 0 )); then
   for ((r=0; r<${#IDS[@]}; r++)); do
     build "$r" 1
-    (( $(room_for_title) < PANEL_MIN_TITLE )) && { use_bar=0; break; }
+    (( $(textw "${TITLE_ROLE[r]}") + panel_cols - $(row_width) < PANEL_MIN_TITLE )) && { use_bar=0; break; }
   done
 fi
 
 for ((r=0; r<${#IDS[@]}; r++)); do
   build "$r" "$use_bar"
-  role="${TITLE_ROLE[r]}" ; label="${TITLE_LABEL[r]}"
-  title="$role"
-  [[ -n "$label" ]] && title="${role} · ${label}"
-  if (( panel_cols > 0 )); then
-    room=$(room_for_title)
-    (( room < 1 )) && room=1
-    if (( $(textw "$title") > room )); then
-      head="${role} · "
-      hw=$(textw "$head")
-      if [[ -n "$label" ]] && (( room - hw >= 4 )); then
-        title="${head}$(textw "$label" $(( room - hw )))"
+  label="${TITLE_LABEL[r]}"
+  if [[ -n "$label" ]]; then
+    if (( panel_cols > 0 )); then
+      room=$(( panel_cols - $(row_width) ))
+      if (( room >= 4 )); then
+        label=$(textw "$label" "$room")
       else
-        title=$(textw "$role" "$room")
+        label=""
       fi
     fi
+    if [[ -n "$label" ]]; then
+      RT[1]="$label"
+    else
+      # no room for even a stub: drop the label pill, then shorten the role if it still overflows
+      RB=("${RB[0]}" "${RB[@]:2}") ; RT=("${RT[0]}" "${RT[@]:2}")
+    fi
   fi
-  RT[0]="$(fg "${TITLE_FG[r]}")${BOLD}${title}${NORM}"
+  if (( panel_cols > 0 )) && (( $(row_width) > panel_cols )); then
+    RT[0]="X"
+    room=$(( panel_cols - $(row_width) + 1 ))
+    (( room < 1 )) && room=1
+    RT[0]="$(fg "${TITLE_FG[r]}")${BOLD}$(textw "${TITLE_ROLE[r]}" "$room")${NORM}"
+  fi
   jq -nc --arg id "${IDS[r]}" --arg content "$(render_range 0 $(( ${#RB[@]} - 1 )))" '{id: $id, content: $content}'
 done
 exit 0

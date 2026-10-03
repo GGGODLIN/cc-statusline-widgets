@@ -68,7 +68,7 @@ class SubagentPanelTests(unittest.TestCase):
 
     row = self.run_panel([self.task()])["a1"]
 
-    self.assertIn("deep-explore · Inventory statusline", row)
+    self.assertIn("deep-explore  Inventory statusline", row)
     self.assertIn("◆ Sonnet 5.5 (high)", row)
     self.assertIn("62k/200k", row)
     self.assertIn("▰▰▰▱▱▱▱▱▱▱", row)
@@ -91,12 +91,28 @@ class SubagentPanelTests(unittest.TestCase):
       self.assertNotIn("▰", row)
       self.assertIn("62k/200k", row)
 
+  def test_role_and_task_are_separate_pills_and_only_the_task_shortens(self):
+    self.agent_files("a1", agent_type="deep-explore", effort="high")
+
+    row = self.run_panel([self.task(label="Reading test_subagent_panel.py and more")], columns=80)["a1"]
+
+    self.assertTrue(row.lstrip().startswith("deep-explore  Reading"), row)
+    self.assertIn("…", row)
+
+  def test_no_room_for_the_task_drops_it_and_keeps_the_tail(self):
+    self.agent_files("a1", agent_type="deep-explore", effort="high")
+
+    row = self.run_panel([self.task(label="Reading files")], columns=55)["a1"]
+
+    self.assertNotIn("Reading", row)
+    self.assertTrue(row.rstrip().endswith("+1.4k"), row)
+
   def test_wide_panel_keeps_full_title(self):
     self.agent_files("a1", agent_type="deep-explore", effort="high")
 
     row = self.run_panel([self.task(label="Inventory own statusline calc methods")], columns=200)["a1"]
 
-    self.assertIn("deep-explore · Inventory own statusline calc methods", row)
+    self.assertIn("deep-explore  Inventory own statusline calc methods", row)
     self.assertNotIn("…", row)
 
   def test_no_growth_reads_plus_zero_and_one_sample_hides_it(self):
@@ -167,8 +183,8 @@ class SubagentPanelTests(unittest.TestCase):
   def test_unknown_agent_type_falls_back_to_name_or_agent(self):
     rows = self.run_panel([self.task("a1"), self.task("a2", name="reviewer")])
 
-    self.assertIn("agent · Inventory statusline", rows["a1"])
-    self.assertIn("reviewer · Inventory statusline", rows["a2"])
+    self.assertIn("agent  Inventory statusline", rows["a1"])
+    self.assertIn("reviewer  Inventory statusline", rows["a2"])
 
   def test_bad_input_prints_nothing(self):
     self.assertEqual(self.run_panel([], raw="not json"), {})
