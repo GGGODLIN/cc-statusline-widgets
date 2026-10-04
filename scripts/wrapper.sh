@@ -374,14 +374,9 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
 fi
 
 # output speed: medians over the last 5 responses from the current model.
-# The pill shows decode speed (first token → last) plus time to first token, so a
-# slow vendor reads as "long wait" instead of "slow writer"; the end-to-end figure
-# (wait included) only goes to widget-log, keeping the tps history comparable.
-# Decode needs the response to open with a thinking block: CC stamps that line when
-# thinking ends and records thinkingDurationMs on it, which is the only way back to
-# the first token. Responses opening with text or a tool call have no such mark, so
-# they don't count, and the pill hides when none qualify (method from coralline).
-# A thinking block logged at ~1ms was delivered whole (gpt via the relay): see the jq.
+# GPT 的思考區塊可能整包落筆，thinkingDurationMs 無法證明生成時間；扣掉等待會灌高速度。
+# GPT 因此使用含等待的整體速度，等待值只估到第一個思考區塊落筆。
+# 其他模型沿用原有 decode 判定；沒有思考區塊時，缺少可用的首 token 時間標記。
 # Subagents live in their own transcripts and never reach this file.
 tps=""
 tps_decode=""
@@ -389,8 +384,8 @@ ttft=""
 tps_shown=""
 tps_fmt=""
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-  # tps2: the memo line changed from one number to three; the old name would feed stale lines in.
-  tps_memo="$CACHE_DIR/tps2-widget-${transcript_path##*/}.memo"
+  # 改用新快取名稱，避免未更新的 transcript 繼續顯示舊算法的高數字。
+  tps_memo="$CACHE_DIR/tps3-widget-${transcript_path##*/}.memo"
   tps_data=""
   if [[ -n "$t_stat" && -f "$tps_memo" ]]; then
     { read -r memo_stat; read -r memo_data; } < "$tps_memo"
@@ -422,18 +417,17 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
       | . as $s | [$s.order[] | $s.m[.]]
       | if length == 0 then "none" else
           (last.model) as $cur
+          | ($cur | startswith("gpt-")) as $gpt
           # <200 tokens is mostly time-to-first-token, which would drag the median down.
           | [.[] | select(.model == $cur and .start != null and .out >= 200)
               | .d = (.end - .start) | select(.d > 0.5 and .d <= 900)] as $ok
           | ([$ok[] | .out / .d] | .[-5:]) as $e2e
-          | ([$ok[] | select(.block == "thinking" and (.think // 0) >= 2)
+          | ([$ok[] | select(($gpt | not) and .block == "thinking" and (.think // 0) >= 2)
               | (.first - .think / 1000) as $tf
               | select($tf >= .start and .end > $tf)
               | {dec: (.out / (.end - $tf)), ttft: ($tf - .start)}] | .[-5:]) as $dt
-          # gpt (and gemini) through the relay land the whole thinking block at once, logged
-          # as ~1ms: its landing is the first thing on screen, but reasoning tokens were
-          # generated during the wait, so decode would read high — overall speed is used instead.
-          | ([$ok[] | select(.block == "thinking" and (.think // 0) < 2)
+          # GPT 即使記錄到 2ms 以上，也可能整包落筆，不能拿最後零點幾秒當生成時間。
+          | ([$ok[] | select(.block == "thinking" and ($gpt or (.think // 0) < 2))
               | (.first - .start) | select(. >= 0)] | .[-5:]) as $bt
           | [ (if ($e2e | length) < 2 then "--" else ($e2e | med | floor) end),
               (if ($dt | length) == 0 then "-" else ([$dt[].dec] | med | floor) end),

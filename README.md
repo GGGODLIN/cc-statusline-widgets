@@ -180,17 +180,18 @@ enough to display" — drift between screen and log destroys that signal.
 Schema (per JSONL line):
 `ts cwd session_id model effort cost codex_weekly_remaining_pct codex_weekly_used_pct codex_weekly_reset_at grok_weekly_used_pct grok_weekly_reset_at grok_bot_used_pct grok_bot_reset_at cache_hit cache_flushes cache_waste cache_idle cache_compactions tps tps_decode ttft ctx_pct ctx_tokens skill subagents git_branch git_ab runaway cpu thermals free_mem disk battery line1 line2 line3`
 
-`tps` is the median end-to-end output speed (tok/s) of the current model's
-last 5 responses of ≥200 tokens: a number, `--` when fewer than 2 qualify,
-or empty without a transcript. It is not what the pill shows.
+`tps` 是目前模型最近 5 個合格回應的整體輸出率中位數：輸出至少 200 token，
+完整耗時大於 0.5 秒且不超過 900 秒。計算包含等待時間；widget-log 在少於
+2 個合格回應時記 `--`，沒有 transcript 時留空。
 
-`tps_decode` is the median speed from first token to last, over those
-responses that open with a streamed thinking block (thinking logged at ≥2ms);
-`ttft` is the median wait in seconds before the first token. For models whose
-thinking block lands whole (logged at ~1ms, e.g. gpt via the relay)
-`tps_decode` stays empty and `ttft` is the wait until that block landed. The
-pill shows `⚡<tps_decode> t/s ⏱ <ttft>s`, or `⚡<tps> t/s ⏱ <ttft>s` for the
-landed-whole case, and hides when neither applies.
+模型名稱以 `gpt-` 開頭時，pill 固定顯示整體輸出率，不依 `thinkingDurationMs`
+選擇算法。GPT 的思考區塊可能整包落筆，記錄到 2ms 以上也不能證明生成時間；
+`tps_decode` 因此留空，`ttft` 估計從請求紀錄到第一個思考區塊落筆的等待時間。
+這不是純吐字速度，也不是 relay 或畫面端的實測 TTFT。
+
+其他模型維持原有判定：思考時長 ≥2ms 時，`tps_decode` 估計首 token 到最後
+一個 token 的速度；較短時使用整體速度。pill 格式仍為 `⚡<速度> t/s ⏱ <等待>s`，
+單筆合格回應也可顯示速度；沒有可用的思考時間標記時整格隱藏。
 
 `line1/2/3` retain ANSI escapes for full statusline replay. All numeric
 fields are stored as strings — convert with `jq tonumber` when querying.
