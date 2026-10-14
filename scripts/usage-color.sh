@@ -80,21 +80,27 @@ render_segment() {
 
   [[ ! -f "$cache" ]] && return
   local wu wr_at su sr_at fu
-  wu=$(jq -r '.data.seven_day.utilization // 0' "$cache")
+  # 缺欄位畫成 ?：補 0 會讓「沒有資料」看起來像「額度完全沒用」
+  wu=$(jq -r '.data.seven_day.utilization // empty' "$cache")
   wr_at=$(jq -r '.data.seven_day.resets_at // ""' "$cache")
-  su=$(jq -r '.data.five_hour.utilization // 0' "$cache")
+  su=$(jq -r '.data.five_hour.utilization // empty' "$cache")
   sr_at=$(jq -r '.data.five_hour.resets_at // ""' "$cache")
   fu=$(jq -r '[.data.limits[]? | select(.kind == "weekly_scoped") | .percent] | max // empty' "$cache")
-  local wc sc
-  wc=$(color_for "$wu")
-  sc=$(color_for "$su")
-  local wu_fmt su_fmt fu_fmt weekly_part
-  wu_fmt=$(printf '%.0f' "${wu:-0}")
-  su_fmt=$(printf '%.0f' "${su:-0}")
-  weekly_part=$(printf '%s%s%%%s' "$wc" "$wu_fmt" "$RST")
+  local wc sc wu_fmt su_fmt wu_disp su_disp fu_fmt weekly_part
+  if [[ -n "$wu" ]]; then
+    wc=$(color_for "$wu"); wu_fmt=$(printf '%.0f' "$wu"); wu_disp="${wu_fmt}%"
+  else
+    wc=$YELLOW; wu_fmt=""; wu_disp="?"
+  fi
+  if [[ -n "$su" ]]; then
+    sc=$(color_for "$su"); su_fmt=$(printf '%.0f' "$su"); su_disp="${su_fmt}%"
+  else
+    sc=$YELLOW; su_fmt=""; su_disp="?"
+  fi
+  weekly_part=$(printf '%s%s%s' "$wc" "$wu_disp" "$RST")
   if [[ -n "$fu" ]]; then
     fu_fmt=$(printf '%.0f' "$fu")
-    if (( wu_fmt < 100 || fu_fmt < 100 )); then
+    if [[ -z "$wu_fmt" ]] || (( wu_fmt < 100 || fu_fmt < 100 )); then
       weekly_part=$(printf '%s%s%%%s%s / %s%s' "$(color_for "$fu_fmt")" "$fu_fmt" "$RST" "$BLUE" "$RST" "$weekly_part")
     fi
   fi
@@ -108,9 +114,9 @@ render_segment() {
   fi
   local fail_tag=""
   [[ -f "$status" ]] && fail_tag=$(printf ' %s⚠%s' "$RED" "$BLUE")
-  printf '%s%s:%s%s %s%s%%%s%s %s | %s%s %s' \
+  printf '%s%s:%s%s %s%s%s%s %s | %s%s %s' \
     "$BLUE" "$name" "$age_tag" "$fail_tag" \
-    "$sc" "$su_fmt" "$RST" "$BLUE" \
+    "$sc" "$su_disp" "$RST" "$BLUE" \
     "$(fmt_reset "$sr_at")" \
     "$weekly_part" "$BLUE" \
     "$(fmt_reset "$wr_at")"
