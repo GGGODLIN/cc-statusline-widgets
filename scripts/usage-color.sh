@@ -108,7 +108,7 @@ render_segment() {
   fi
   local fail_tag=""
   [[ -f "$status" ]] && fail_tag=$(printf ' %s⚠%s' "$RED" "$BLUE")
-  printf '%s%s:%s%s %s%s%%%s%s %s | %s%s  %s' \
+  printf '%s%s:%s%s %s%s%%%s%s %s | %s%s %s' \
     "$BLUE" "$name" "$age_tag" "$fail_tag" \
     "$sc" "$su_fmt" "$RST" "$BLUE" \
     "$(fmt_reset "$sr_at")" \
