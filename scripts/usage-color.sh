@@ -95,7 +95,7 @@ render_segment() {
   if [[ -n "$fu" ]]; then
     fu_fmt=$(printf '%.0f' "$fu")
     if (( wu_fmt < 100 || fu_fmt < 100 )); then
-      weekly_part+=$(printf '%s %s%s%%%s' "$BLUE" "$(color_for "$fu_fmt")" "$fu_fmt" "$RST")
+      weekly_part+=$(printf '%s/%s%s%%%s' "$BLUE" "$(color_for "$fu_fmt")" "$fu_fmt" "$RST")
     fi
   fi
   local mtime now age age_tag=""
