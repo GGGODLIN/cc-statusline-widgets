@@ -64,9 +64,9 @@ WT_BG_CTX=${WT_BG_CTX:-${VL_BG_CTX:-238}}
 WT_BG_SYS=${WT_BG_SYS:-${VL_BG_LINES:-240}}
 WT_BG_SYS2=${WT_BG_SYS2:-${VL_BG_DURATION:-60}}
 
-CAP_L=$(printf '\xee\x82\xb6')   # U+E0B6 left rounded cap
-CAP_R=$(printf '\xee\x82\xb4')   # U+E0B4 right rounded cap
-SEP=$(printf '\xee\x82\xb0')     # U+E0B0 powerline separator
+CAP_L=$'\xee\x82\xb6'   # U+E0B6 left rounded cap
+CAP_R=$'\xee\x82\xb4'   # U+E0B4 right rounded cap
+SEP=$'\xee\x82\xb0'     # U+E0B0 powerline separator
 
 bg() {
   [[ -n "$1" ]] || return 0
@@ -79,6 +79,18 @@ fg() {
   if [[ "${1#*,}" != "$1" ]]; then
     local IFS=','; set -- $1; printf '\033[38;2;%s;%s;%sm' "$1" "$2" "$3"
   else printf '\033[38;5;%sm' "$1"; fi
+}
+bg_var() {
+  [[ -n "$2" ]] || { printf -v "$1" '%s' ''; return 0; }
+  if [[ "${2#*,}" != "$2" ]]; then
+    local IFS=','; set -- "$1" $2; printf -v "$1" '\033[48;2;%s;%s;%sm' "$2" "$3" "$4"
+  else printf -v "$1" '\033[48;5;%sm' "$2"; fi
+}
+fg_var() {
+  [[ -n "$2" ]] || { printf -v "$1" '%s' ''; return 0; }
+  if [[ "${2#*,}" != "$2" ]]; then
+    local IFS=','; set -- "$1" $2; printf -v "$1" '\033[38;2;%s;%s;%sm' "$2" "$3" "$4"
+  else printf -v "$1" '\033[38;5;%sm' "$2"; fi
 }
 
 pct_color() {
@@ -99,6 +111,17 @@ quota_pct_color() {
   fi
 }
 
+quota_pct_color_var() {
+  local _p=${2%.*}
+  : ${_p:=0}
+  if   (( _p >= 100 )); then printf -v "$1" '%s' "$RED_BOLD"
+  elif (( _p >= 80 ));  then printf -v "$1" '%s' "$RED"
+  elif (( _p >= 50 ));  then printf -v "$1" '%s' "$YELLOW"
+  elif (( _p >= 30 ));  then printf -v "$1" '%s' "$BLUE"
+  else                       printf -v "$1" '%s' "$GREEN"
+  fi
+}
+
 fmt_glm_countdown() {
   local reset_ms=$1
   if [[ -z "$reset_ms" || "$reset_ms" == "null" || "$reset_ms" == "0" ]]; then
@@ -106,12 +129,28 @@ fmt_glm_countdown() {
     return
   fi
   local reset_s=$(( reset_ms / 1000 ))
-  local diff_s=$(( reset_s - $(date +%s) ))
+  local diff_s=$(( reset_s - ${NOW_SEC_RENDER:-$(date +%s)} ))
   if (( diff_s <= 0 )); then printf '0m'; return; fi
   local d=$(( diff_s / 86400 )) h=$(( (diff_s % 86400) / 3600 )) m=$(( (diff_s % 3600) / 60 ))
   if (( d > 0 )); then printf '%dd%dh' "$d" "$h"
   elif (( h > 0 )); then printf '%dh%dm' "$h" "$m"
   else printf '%dm' "$m"
+  fi
+}
+
+fmt_glm_countdown_var() {
+  local _rms=$2
+  if [[ -z "$_rms" || "$_rms" == "null" || "$_rms" == "0" ]]; then
+    printf -v "$1" '0m'
+    return
+  fi
+  local _rs=$(( _rms / 1000 ))
+  local _ds=$(( _rs - ${NOW_SEC_RENDER:-$(date +%s)} ))
+  if (( _ds <= 0 )); then printf -v "$1" '0m'; return; fi
+  local _d=$(( _ds / 86400 )) _h=$(( (_ds % 86400) / 3600 )) _m=$(( (_ds % 3600) / 60 ))
+  if (( _d > 0 )); then printf -v "$1" '%dd%dh' "$_d" "$_h"
+  elif (( _h > 0 )); then printf -v "$1" '%dh%dm' "$_h" "$_m"
+  else printf -v "$1" '%dm' "$_m"
   fi
 }
 
@@ -124,33 +163,57 @@ push_seg() {  # $1=line-no $2=bg $3=text
   eval "S${1}_BG[\${#S${1}_BG[@]}]=\$2 ; S${1}_TX[\${#S${1}_TX[@]}]=\$3"
 }
 
-render_range() {  # render RB/RT[$1..$2] as one row → stdout
-  local s=$1 e=$2 i out t b rebg
+render_range_var() {  # render RB/RT[$2..$3] as one row → variable $1
+  local _out_var=$1 s=$2 e=$3 i out t b rebg _fg_b _bg_b _bg_next _fg_text
   if [[ "$WT_STYLE" == "lean" ]]; then
     out=""
     for ((i=s; i<=e; i++)); do
-      out+="${RST}$(fg "${RB[i]}")${RT[i]}"
+      fg_var _fg_b "${RB[i]}"
+      out+="${RST}${_fg_b}${RT[i]}"
       (( i < e )) && out+="${RST}  "
     done
-    printf '%s' "${out}${RST}"
+    printf -v "$_out_var" '%s' "${out}${RST}"
     return 0
   fi
-  out="${RST}$(fg "${RB[s]}")${CAP_L}"
+  fg_var _fg_text "$VL_FG_TEXT"
+  fg_var _fg_b "${RB[s]}"
+  out="${RST}${_fg_b}${CAP_L}"
   for ((i=s; i<=e; i++)); do
     b=${RB[i]} ; t=${RT[i]}
-    rebg="${RST}$(bg "$b")$(fg "$VL_FG_TEXT")"
+    bg_var _bg_b "$b"
+    rebg="${RST}${_bg_b}${_fg_text}"
     t=${t//"$RST"/$rebg}
-    out+="$(bg "$b")$(fg "$VL_FG_TEXT") ${t} "
-    (( i < e )) && out+="${RST}$(bg "${RB[i+1]}")$(fg "$b")${SEP}"
+    out+="${_bg_b}${_fg_text} ${t} "
+    if (( i < e )); then
+      bg_var _bg_next "${RB[i+1]}"
+      fg_var _fg_b "$b"
+      out+="${RST}${_bg_next}${_fg_b}${SEP}"
+    fi
   done
-  printf '%s' "${out}${RST}$(fg "${RB[e]}")${CAP_R}${RST}"
+  fg_var _fg_b "${RB[e]}"
+  printf -v "$_out_var" '%s' "${out}${RST}${_fg_b}${CAP_R}${RST}"
+}
+
+render_range() {  # render RB/RT[$1..$2] as one row → stdout
+  local _rr_out=""
+  render_range_var _rr_out "$1" "$2"
+  printf '%s' "$_rr_out"
+}
+
+render_line_var() {  # $1=var-name $2=line-no (empty if no segments)
+  eval "RB=( \${S${2}_BG[@]+\"\${S${2}_BG[@]}\"} ) ; RT=( \${S${2}_TX[@]+\"\${S${2}_TX[@]}\"} )"
+  local n=${#RB[@]}
+  if (( n == 0 )); then
+    printf -v "$1" '%s' ''
+    return 0
+  fi
+  render_range_var "$1" 0 $((n-1))
 }
 
 render_line() {  # $1=line-no → stdout (empty if no segments)
-  eval "RB=( \${S${1}_BG[@]+\"\${S${1}_BG[@]}\"} ) ; RT=( \${S${1}_TX[@]+\"\${S${1}_TX[@]}\"} )"
-  local n=${#RB[@]}
-  (( n == 0 )) && return 0
-  render_range 0 $((n-1))
+  local _rl_out=""
+  render_line_var _rl_out "$1"
+  printf '%s' "$_rl_out"
 }
 
 seg_widths() {  # NUL-separated texts on stdin → one visible width per line
@@ -188,21 +251,19 @@ seg_widths() {  # NUL-separated texts on stdin → one visible width per line
 # ----- end pill rendering layer -----
 
 input=$(cat)
+NOW_SEC_RENDER=$(date +%s)
 jqr() { jq -r "$1" <<<"$input" 2>/dev/null; }
 
 probe_cols() {
   [[ -n "${WT_FORCE_COLS:-}" ]] && { printf '%s' "$WT_FORCE_COLS"; return; }
-  local pid=$$
-  local i
+  [[ "${COLUMNS:-}" =~ ^[0-9]+$ ]] && (( COLUMNS > 0 )) && { printf '%s' "$COLUMNS"; return; }
+  local pid=$$ i tty size _rows
   for i in 1 2 3 4 5 6 7 8; do
-    pid=$(ps -o ppid= -p "$pid" 2>/dev/null | tr -d ' ')
+    read -r pid tty < <(ps -o ppid=,tty= -p "$pid" 2>/dev/null) || true
     [[ -z "$pid" || "$pid" == "0" ]] && break
-    local tty
-    tty=$(ps -o tty= -p "$pid" 2>/dev/null | tr -d ' ')
     [[ -z "$tty" || "$tty" == "??" || "$tty" == "?" ]] && continue
-    local size
-    size=$(stty size < "/dev/$tty" 2>/dev/null | awk '{print $2}')
-    [[ -n "$size" && "$size" -gt 0 ]] && { printf '%s' "$size"; return; }
+    read -r _rows size < <(stty size < "/dev/$tty" 2>/dev/null) || true
+    [[ -n "${size:-}" && "$size" -gt 0 ]] 2>/dev/null && { printf '%s' "$size"; return; }
   done
   tput cols 2>/dev/null || true
 }
@@ -260,19 +321,88 @@ fit_to_cols() {
   ' -- "$1" "$2"
 }
 
+fit_and_print_lines() {
+  perl -CSDA -e '
+    sub cw {
+      my $o = shift;
+      return 0 if $o == 0x200D
+                || ($o >= 0x0300 && $o <= 0x036F)
+                || ($o >= 0x200B && $o <= 0x200F)
+                || ($o >= 0xFE00 && $o <= 0xFE0F)
+                || ($o >= 0x1F3FB && $o <= 0x1F3FF);
+      return 2 if ($o >= 0x1100 && $o <= 0x115F)
+                || ($o >= 0x2E80 && $o <= 0x303E)
+                || ($o >= 0x3041 && $o <= 0x33FF)
+                || ($o >= 0x3400 && $o <= 0x4DBF)
+                || ($o >= 0x4E00 && $o <= 0x9FFF)
+                || ($o >= 0xA000 && $o <= 0xA4CF)
+                || ($o >= 0xAC00 && $o <= 0xD7A3)
+                || ($o >= 0xF900 && $o <= 0xFAFF)
+                || ($o >= 0xFE30 && $o <= 0xFE4F)
+                || ($o >= 0xFF00 && $o <= 0xFF60)
+                || ($o >= 0xFFE0 && $o <= 0xFFE6)
+                || ($o >= 0x1F300 && $o <= 0x1F9FF)
+                || ($o >= 0x20000 && $o <= 0x2FFFD)
+                || ($o >= 0x30000 && $o <= 0x3FFFD);
+      return 1;
+    }
+    sub fit_one {
+      my ($max, $text) = @_;
+      my $stripped = $text;
+      $stripped =~ s/\e\[[0-9;]*[a-zA-Z]//g;
+      my $w = 0;
+      for my $c (split //, $stripped) {
+        $w += cw(ord($c));
+      }
+      return $text if $w <= $max;
+      my $vis = 0;
+      my $out = "";
+      while ($text =~ /\G(\e\[[0-9;]*[a-zA-Z]|.)/gs) {
+        my $tok = $1;
+        if ($tok =~ /^\e/) { $out .= $tok; next; }
+        my $tw = cw(ord($tok));
+        last if $vis + $tw > $max - 1;
+        $out .= $tok;
+        $vis += $tw;
+      }
+      return $out . "\x{2026}\e[0m";
+    }
+    my $max = shift @ARGV;
+    for my $line (@ARGV) {
+      print fit_one($max, $line), "\n";
+    }
+  ' -- "$@"
+}
+
 # Conditional widgets (read early so they can prefix line1 — most visible spot)
 runaway=$(cat "$CACHE_DIR/runaway.txt" 2>/dev/null || printf '')
 
-# ----- Line 1 -----
-model_name=$(jqr '.model.display_name // (if (.model | type) == "string" then .model else "?" end)')
+# ----- Line 1 (batch parse stdin JSON in a single jq invocation) -----
+_in_fields=$(jq -r '[
+  (try (.model.display_name // (if (.model | type) == "string" then .model else "?" end)) catch "?"),
+  (try (.model.id // (if (.model | type) == "string" then .model else "" end)) catch ""),
+  (try (.effort.level // "") catch ""),
+  (try (.transcript_path // "") catch ""),
+  (try (.cost.total_cost_usd // 0) catch 0),
+  (try (.workspace.current_dir // .cwd // "") catch ""),
+  (try (.session_id // "") catch ""),
+  (try (.context_window.used_percentage // 0) catch 0),
+  (try (.context_window.context_window_size // 0) catch 0),
+  (try ((.context_window.current_usage.input_tokens // 0) + (.context_window.current_usage.cache_creation_input_tokens // 0) + (.context_window.current_usage.cache_read_input_tokens // 0)) catch 0),
+  "END"
+] | map(tostring) | join("\u001f")' <<<"$input" 2>/dev/null) || _in_fields=""
+if [[ -n "$_in_fields" ]]; then
+  IFS=$'\037' read -r model_name model_id effort_level transcript_path session_cost_usd cwd session_id ctx_used_pct ctx_size ctx_used_tokens _in_end <<<"$_in_fields"
+else
+  model_name="?" ; model_id="" ; effort_level="" ; transcript_path=""
+  session_cost_usd=0 ; cwd="" ; session_id=""
+  ctx_used_pct=0 ; ctx_size=0 ; ctx_used_tokens=0
+fi
 model_name="${model_name% (*)}"
-model_id=$(jqr '.model.id // (if (.model | type) == "string" then .model else "" end)')
-effort_level=$(jqr '.effort.level // ""')
 
 # cache health: last-turn hit% + session flush count + bug-induced waste
 # Algorithm and waste formula adapted from https://github.com/AlexZan/cc-cache-monitor
 cache_hit_fmt=""
-transcript_path=$(jqr '.transcript_path // ""')
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
   t_stat=$(stat -f '%m %z' "$transcript_path" 2>/dev/null)
   cache_memo="$CACHE_DIR/cache-widget-${transcript_path##*/}.memo"
@@ -338,9 +468,8 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
   fi
   fi
   if [[ -n "$cache_data" && "$cache_data" != "null" ]]; then
-    hit=$(jq -r '.hit' <<<"$cache_data")
-    flushes=$(jq -r '.flushes' <<<"$cache_data")
-    waste=$(jq -r '.session_waste // 0' <<<"$cache_data")
+    _cd_fields=$(jq -r '[(.hit // ""), (.flushes // 0), (.session_waste // 0), (.last_ts // ""), (.compactions // 0), "END"] | map(tostring) | join("\u001f")' <<<"$cache_data" 2>/dev/null) || _cd_fields=""
+    IFS=$'\037' read -r hit flushes waste idle_ts compactions _cd_end <<<"$_cd_fields"
 
     if [[ "$hit" == "-1" ]]; then
       cache_hit_fmt="${GRAY}Cache: --${RST}"
@@ -351,9 +480,8 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
       fi
       cache_hit_fmt="${GRAY}Cache: ${RST}${hit_color}${warn}${hit}%${RST}"
 
-      idle_ts=$(jq -r '.last_ts // empty' <<<"$cache_data")
       if [[ -n "$idle_ts" ]]; then
-        idle=$(( $(date +%s) - idle_ts ))
+        idle=$(( NOW_SEC_RENDER - idle_ts ))
         (( idle < 0 )) && idle=0
         idle_min=$(( idle / 60 ))
         if (( idle < 3600 )); then idle_fmt="${idle_min}m"
@@ -365,7 +493,6 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
         fi
         cache_hit_fmt="${cache_hit_fmt} ${idle_color}${idle_warn}${idle_fmt}${RST}"
       fi
-      compactions=$(jq -r '.compactions // 0' <<<"$cache_data")
       if (( compactions > 0 )); then
         cache_hit_fmt="${cache_hit_fmt} ${GRAY}⧉${RST}${BOLD}${YELLOW}  ${compactions}${RST}"
       fi
@@ -460,10 +587,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
   fi
 fi
 
-session_cost_usd=$(jqr '.cost.total_cost_usd // 0')
 session_cost_fmt=$(awk -v c="$session_cost_usd" 'BEGIN { printf "$%.2f", c }')
-
-cwd=$(jqr '.workspace.current_dir // .cwd // ""')
 
 git_branch_fmt="⎇ no git"
 git_ab_fmt="(no git)"
@@ -497,7 +621,6 @@ if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null \
   fi
 fi
 
-session_id=$(jqr '.session_id // ""')
 skill_name=""
 if [[ -n "$session_id" ]]; then
   skill_name=$(cat "$CACHE_DIR/skill-${session_id}.txt" 2>/dev/null)
@@ -509,7 +632,32 @@ else
   skills_fmt="🪄 -"
 fi
 
-subagents_fmt=$("$SCRIPT_DIR/subagent-count.sh" "$transcript_path" 2>/dev/null)
+count_subagents_inline() {
+  local tp="${1:-}"
+  [[ -n "$tp" ]] || { subagents_fmt="🤖 -"; return 0; }
+  local sub="${tp%.jsonl}/subagents"
+  [[ -d "$sub" ]] || { subagents_fmt="🤖 -"; return 0; }
+  shopt -s nullglob
+  local metas=("$sub"/*.meta.json)
+  shopt -u nullglob
+  (( ${#metas[@]} )) || { subagents_fmt="🤖 -"; return 0; }
+  local matched
+  matched=$(command grep -LE '"spawnDepth": ?([2-9]|[1-9][0-9]+)' "${metas[@]}" 2>/dev/null || true)
+  if [[ -z "$matched" ]]; then
+    subagents_fmt="🤖 -"
+    return 0
+  fi
+  local n=0 _line
+  while IFS= read -r _line; do
+    [[ -n "$_line" ]] && n=$(( n + 1 ))
+  done <<<"$matched"
+  if (( n > 0 )); then subagents_fmt="🤖 $n"; else subagents_fmt="🤖 -"; fi
+}
+
+subagents_fmt=""
+if [[ -x "$SCRIPT_DIR/subagent-count.sh" ]]; then
+  count_subagents_inline "$transcript_path"
+fi
 [[ -n "$subagents_fmt" ]] || subagents_fmt="🤖 ?"
 
 [[ -n "$runaway" ]] && push_seg 1 "$WT_BG_RUNAWAY" "$runaway"
@@ -517,7 +665,9 @@ model_pill_text="◆ ${model_name}"
 [[ -n "$effort_level" ]] && model_pill_text="${model_pill_text} (${effort_level})"
 [[ -n "$tps_fmt" ]] && model_pill_text="${model_pill_text} ${tps_fmt}"
 # WT_FG_MODEL: ink for this pill alone, for a light WT_BG_MODEL under a theme whose text is light.
-push_seg 1 "$WT_BG_MODEL" "${WT_FG_MODEL:+$(fg "$WT_FG_MODEL")}${BOLD}${model_pill_text}${NORM}"
+_fg_model=""
+[[ -n "${WT_FG_MODEL:-}" ]] && fg_var _fg_model "$WT_FG_MODEL"
+push_seg 1 "$WT_BG_MODEL" "${_fg_model}${BOLD}${model_pill_text}${NORM}"
 [[ -n "$cache_hit_fmt" ]] && push_seg 1 "$WT_BG_CACHE" "$cache_hit_fmt"
 push_seg 1 "$WT_BG_SKILL" "$skills_fmt"
 [[ "$subagents_fmt" != "🤖 -" ]] && push_seg 1 "$WT_BG_AGENTS" "$subagents_fmt"
@@ -788,7 +938,7 @@ fmt_codex_quota() {
   [[ "$weekly_state" == "none" ]] && return
 
   local now_sec
-  now_sec=$(date +%s)
+  now_sec=$NOW_SEC_RENDER
   if (( now_sec - fetched_at > 90 )); then
     CODEX_PILL_OUT="${RED}GPT: stale${RST}"
     printf '%s' "$CODEX_PILL_OUT"
@@ -800,11 +950,11 @@ fmt_codex_quota() {
   CODEX_WEEKLY_RESET_AT="$reset_at"
 
   local color
-  color=$(quota_pct_color "$used_pct")
+  quota_pct_color_var color "$used_pct"
   if [[ -n "$reset_at" ]]; then
     local countdown reset_ms
     reset_ms=$(( reset_at * 1000 ))
-    countdown=$(fmt_glm_countdown "$reset_ms")
+    fmt_glm_countdown_var countdown "$reset_ms"
     CODEX_PILL_OUT="${BLUE}GPT: ${RST}${color}${used_pct}%${RST}${BLUE} ${countdown}${RST}"
   else
     CODEX_PILL_OUT="${BLUE}GPT: ${RST}${color}${used_pct}%${RST}"
@@ -838,7 +988,7 @@ fmt_grok_quota() {
   IFS=$'\t' read -r sampled_at used_pct reset_at <<<"$parsed"
 
   # three missed 5-min samples: the agent is down or the grok login expired
-  if (( $(date +%s) - sampled_at > 900 )); then
+  if (( NOW_SEC_RENDER - sampled_at > 900 )); then
     GROK_PILL_OUT="${RED}Grok: stale${RST}"
     printf '%s' "$GROK_PILL_OUT"
     return
@@ -848,8 +998,8 @@ fmt_grok_quota() {
   GROK_WEEKLY_RESET_AT="$reset_at"
 
   local color countdown
-  color=$(quota_pct_color "$used_pct")
-  countdown=$(fmt_glm_countdown "$(( reset_at * 1000 ))")
+  quota_pct_color_var color "$used_pct"
+  fmt_glm_countdown_var countdown "$(( reset_at * 1000 ))"
   GROK_PILL_OUT="${BLUE}Grok: ${RST}${color}${used_pct}%${RST}${BLUE} ${countdown}${RST}"
   printf '%s' "$GROK_PILL_OUT"
 }
@@ -896,7 +1046,7 @@ fmt_grok_bot_quota() {
   fi
   [[ -z "$fetched_at" ]] && return
 
-  if (( $(date +%s) - fetched_at > 900 )); then
+  if (( NOW_SEC_RENDER - fetched_at > 900 )); then
     GROK_BOT_OUT="${RED}Bot: stale${RST}"
     printf '%s' "$GROK_BOT_OUT"
     return
@@ -906,8 +1056,8 @@ fmt_grok_bot_quota() {
   GROK_BOT_RESET_AT="$reset_at"
 
   local color countdown
-  color=$(quota_pct_color "$used_pct")
-  countdown=$(fmt_glm_countdown "$(( reset_at * 1000 ))")
+  quota_pct_color_var color "$used_pct"
+  fmt_glm_countdown_var countdown "$(( reset_at * 1000 ))"
   GROK_BOT_OUT="${BLUE}Bot: ${RST}${color}${used_pct}%${RST}${BLUE} ${countdown}${RST}"
   printf '%s' "$GROK_BOT_OUT"
 }
@@ -934,7 +1084,8 @@ if [[ -n "$usage_part" ]]; then
       usage_chunk="$usage_rest"
       usage_rest=""
     fi
-    usage_chunk=$(trim_ws "$usage_chunk")
+    usage_chunk="${usage_chunk#"${usage_chunk%%[! ]*}"}"
+    usage_chunk="${usage_chunk%"${usage_chunk##*[! ]}"}"
     if [[ -n "$usage_chunk" ]]; then
       if (( usage_i % 2 == 0 )); then
         push_seg 2 "$WT_BG_USAGE" "$usage_chunk"
@@ -962,14 +1113,7 @@ fi
 
 # ----- Line 3 -----
 # context-bar
-ctx_used_pct=$(jqr '.context_window.used_percentage // 0')
 ctx_used_int=$(awk -v p="$ctx_used_pct" 'BEGIN { printf "%.0f", p }')
-ctx_size=$(jqr '.context_window.context_window_size // 0')
-ctx_used_tokens=$(jqr '
-  (.context_window.current_usage.input_tokens // 0) +
-  (.context_window.current_usage.cache_creation_input_tokens // 0) +
-  (.context_window.current_usage.cache_read_input_tokens // 0)
-')
 if (( ctx_size > 0 )); then
   ctx_used_k=$(( ctx_used_tokens / 1000 ))
   ctx_total_k=$(( ctx_size / 1000 ))
@@ -991,7 +1135,9 @@ while (( i < bar_width )); do
   i=$(( i + 1 ))
 done
 ctx_bar_fmt="⛁ [${bar}] ${ctx_used_k}k/${ctx_total_k}k (${ctx_used_int}%)"
-ctx_seg="$(fg "$(pct_color "$ctx_used_int")")⛁ ${bar} ${ctx_used_int}%${RST}$(fg "$VL_FG_DIM") ${ctx_used_k}k/${ctx_total_k}k${RST}"
+fg_var _fg_ctx "$(pct_color "$ctx_used_int")"
+fg_var _fg_dim "$VL_FG_DIM"
+ctx_seg="${_fg_ctx}⛁ ${bar} ${ctx_used_int}%${RST}${_fg_dim} ${ctx_used_k}k/${ctx_total_k}k${RST}"
 
 # read daemon-written widgets
 cpu=$(cat "$CACHE_DIR/cpu.txt" 2>/dev/null || printf 'CPU: ?')
@@ -1008,9 +1154,9 @@ push_seg 3 "$WT_BG_SYS2" "$disk"
 push_seg 3 "$WT_BG_SYS"  "$battery"
 
 # ----- Render segments and fit to terminal width -----
-line1=$(render_line 1)
-line2=$(render_line 2)
-line3=$(render_line 3)
+render_line_var line1 1
+render_line_var line2 2
+render_line_var line3 3
 line1_full="$line1"
 line2_full="$line2"
 line3_full="$line3"
@@ -1036,26 +1182,26 @@ if [[ "$WT_LAYOUT" == "auto" ]]; then
     else                                 cap_w=2; sep_w=1; pad_w=2; fi
     start=0 ; nlines=1 ; cur=$(( cap_w + SEG_W[0] + pad_w ))
     out_rows=""
+    _row_str=""
     for ((i=1; i<total; i++)); do
       need=$(( cur + sep_w + SEG_W[i] + pad_w ))
       if (( need > effective_cols && nlines < WT_MAX_LINES )); then
-        out_rows="${out_rows}$(render_range "$start" $((i-1)))"$'\n'
+        render_range_var _row_str "$start" $((i-1))
+        out_rows="${out_rows}${_row_str}"$'\n'
         start=$i ; nlines=$((nlines+1)) ; cur=$(( cap_w + SEG_W[i] + pad_w ))
       else
         cur=$need
       fi
     done
-    out_rows="${out_rows}$(render_range "$start" $((total-1)))"
+    render_range_var _row_str "$start" $((total-1))
+    out_rows="${out_rows}${_row_str}"
     printf '%s\n' "$out_rows"
   fi
 else
-  line1=$(fit_to_cols "$effective_cols" "$line1")
-  [[ -n "$line2" ]] && line2=$(fit_to_cols "$effective_cols" "$line2")
-  line3=$(fit_to_cols "$effective_cols" "$line3")
   if [[ -n "$line2" ]]; then
-    printf '%s\n%s\n%s\n' "$line1" "$line2" "$line3"
+    fit_and_print_lines "$effective_cols" "$line1" "$line2" "$line3"
   else
-    printf '%s\n%s\n' "$line1" "$line3"
+    fit_and_print_lines "$effective_cols" "$line1" "$line3"
   fi
 fi
 

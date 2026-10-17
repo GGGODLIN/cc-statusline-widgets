@@ -20,6 +20,11 @@ metas=("$sub"/*.meta.json)
 shopt -u nullglob
 (( ${#metas[@]} )) || none
 
-n=$(command grep -LE '"spawnDepth": ?([2-9]|[1-9][0-9]+)' "${metas[@]}" 2>/dev/null | wc -l | tr -d ' ')
-[[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )) || none
+matched=$(command grep -LE '"spawnDepth": ?([2-9]|[1-9][0-9]+)' "${metas[@]}" 2>/dev/null || true)
+[[ -n "$matched" ]] || none
+n=0
+while IFS= read -r _line; do
+  [[ -n "$_line" ]] && n=$(( n + 1 ))
+done <<<"$matched"
+(( n > 0 )) || none
 printf '🤖 %s\n' "$n"

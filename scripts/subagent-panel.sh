@@ -37,9 +37,9 @@ WT_BG_AGENTS=${WT_BG_AGENTS:-${VL_BG_AGENTS:-${VL_BG_DURATION:-60}}}
 RST=$'\033[0m'
 BOLD=$'\033[1m'
 NORM=$'\033[22m'
-CAP_L=$(printf '\xee\x82\xb6')
-CAP_R=$(printf '\xee\x82\xb4')
-SEP=$(printf '\xee\x82\xb0')
+CAP_L=$'\xee\x82\xb6'
+CAP_R=$'\xee\x82\xb4'
+SEP=$'\xee\x82\xb0'
 
 bg() {
   [[ -n "$1" ]] || return 0
@@ -53,6 +53,18 @@ fg() {
     local IFS=','; set -- $1; printf '\033[38;2;%s;%s;%sm' "$1" "$2" "$3"
   else printf '\033[38;5;%sm' "$1"; fi
 }
+bg_var() {
+  [[ -n "$2" ]] || { printf -v "$1" '%s' ''; return 0; }
+  if [[ "${2#*,}" != "$2" ]]; then
+    local IFS=','; set -- "$1" $2; printf -v "$1" '\033[48;2;%s;%s;%sm' "$2" "$3" "$4"
+  else printf -v "$1" '\033[48;5;%sm' "$2"; fi
+}
+fg_var() {
+  [[ -n "$2" ]] || { printf -v "$1" '%s' ''; return 0; }
+  if [[ "${2#*,}" != "$2" ]]; then
+    local IFS=','; set -- "$1" $2; printf -v "$1" '\033[38;2;%s;%s;%sm' "$2" "$3" "$4"
+  else printf -v "$1" '\033[38;5;%sm' "$2"; fi
+}
 
 pct_color() {
   local p=${1:-0}
@@ -62,25 +74,34 @@ pct_color() {
 }
 
 render_range() {  # RB/RT[$1..$2] as one row → stdout (copy of wrapper.sh's renderer)
-  local s=$1 e=$2 i out t b rebg
+  local s=$1 e=$2 i out t b rebg _fg_b _bg_b _bg_next _fg_text
   if [[ "$WT_STYLE" == "lean" ]]; then
     out=""
     for ((i=s; i<=e; i++)); do
-      out+="${RST}$(fg "${RB[i]}")${RT[i]}"
+      fg_var _fg_b "${RB[i]}"
+      out+="${RST}${_fg_b}${RT[i]}"
       (( i < e )) && out+="${RST}  "
     done
     printf '%s' "${out}${RST}"
     return 0
   fi
-  out="${RST}$(fg "${RB[s]}")${CAP_L}"
+  fg_var _fg_text "$VL_FG_TEXT"
+  fg_var _fg_b "${RB[s]}"
+  out="${RST}${_fg_b}${CAP_L}"
   for ((i=s; i<=e; i++)); do
     b=${RB[i]} ; t=${RT[i]}
-    rebg="${RST}$(bg "$b")$(fg "$VL_FG_TEXT")"
+    bg_var _bg_b "$b"
+    rebg="${RST}${_bg_b}${_fg_text}"
     t=${t//"$RST"/$rebg}
-    out+="$(bg "$b")$(fg "$VL_FG_TEXT") ${t} "
-    (( i < e )) && out+="${RST}$(bg "${RB[i+1]}")$(fg "$b")${SEP}"
+    out+="${_bg_b}${_fg_text} ${t} "
+    if (( i < e )); then
+      bg_var _bg_next "${RB[i+1]}"
+      fg_var _fg_b "$b"
+      out+="${RST}${_bg_next}${_fg_b}${SEP}"
+    fi
   done
-  printf '%s' "${out}${RST}$(fg "${RB[e]}")${CAP_R}${RST}"
+  fg_var _fg_b "${RB[e]}"
+  printf '%s' "${out}${RST}${_fg_b}${CAP_R}${RST}"
 }
 
 # Display width (CJK and emoji count 2, ANSI 0), or with a max: the text cut to fit, ending in "…".

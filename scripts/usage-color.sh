@@ -26,6 +26,15 @@ color_for() {
   fi
 }
 
+color_for_var() {
+  if (( ${2%.*} >= 100 )); then printf -v "$1" '%s' "$RED_BOLD"
+  elif (( ${2%.*} >= 80 )); then printf -v "$1" '%s' "$RED"
+  elif (( ${2%.*} >= 50 )); then printf -v "$1" '%s' "$YELLOW"
+  elif (( ${2%.*} >= 30 )); then printf -v "$1" '%s' "$BLUE"
+  else printf -v "$1" '%s' "$GREEN"
+  fi
+}
+
 fmt_name() {
   local prefix="${1%@*}"
   case "$prefix" in
@@ -36,13 +45,22 @@ fmt_name() {
   esac
 }
 
+fmt_name_var() {
+  case "${2%@*}" in
+    philiplin)      printf -v "$1" 'Team-P%s' "${3:-}" ;;
+    software.agent) printf -v "$1" 'Team-S%s' "${3:-}" ;;
+    alex.robin)     printf -v "$1" 'Max%s' "${3:-}" ;;
+    *)              printf -v "$1" '%s%s' "${2%@*}" "${3:-}" ;;
+  esac
+}
+
 fmt_reset() {
   local at="${1%%.*}"
   [[ -z "$at" ]] && { printf -- '—'; return; }
   local reset_s now_s diff_s
   reset_s=$(date -j -u -f "%Y-%m-%dT%H:%M:%S" "$at" +%s 2>/dev/null) \
     || { printf -- '—'; return; }
-  now_s=$(date +%s)
+  now_s=${NOW_SEC:-$(date +%s)}
   diff_s=$((reset_s - now_s))
   (( diff_s < 0 )) && { printf -- '—'; return; }
   if (( diff_s >= 86400 )); then
@@ -62,10 +80,19 @@ fmt_age() {
   fi
 }
 
+fmt_age_var() {
+  if (( $2 < 60 )); then printf -v "$1" '%ds' "$2"
+  elif (( $2 < 3600 )); then printf -v "$1" '%dm' $(($2 / 60))
+  elif (( $2 < 86400 )); then printf -v "$1" '%dh' $(($2 / 3600))
+  else printf -v "$1" '%dd' $(($2 / 86400))
+  fi
+}
+
 render_segment() {
   local email="$1" cache="$2" mark="${3:-}"
   local status="${cache%.json}.status"
-  local name="$(fmt_name "$email")$mark"
+  local name
+  fmt_name_var name "$email" "$mark"
 
   # 有 cache 就畫數字，最後一次 fetch 失敗只降級成帳號名旁的 ⚠ 標記。
   # 兩個 writer（chrome extension 30s、poller 180s fallback）任一失敗時，另一個
@@ -79,47 +106,57 @@ render_segment() {
   fi
 
   [[ ! -f "$cache" ]] && return
-  local wu wr_at su sr_at fu
+  local q_fields wu wr_at su sr_at fu _q_end
   # 缺欄位畫成 ?：補 0 會讓「沒有資料」看起來像「額度完全沒用」
-  wu=$(jq -r '.data.seven_day.utilization // empty' "$cache")
-  wr_at=$(jq -r '.data.seven_day.resets_at // ""' "$cache")
-  su=$(jq -r '.data.five_hour.utilization // empty' "$cache")
-  sr_at=$(jq -r '.data.five_hour.resets_at // ""' "$cache")
-  fu=$(jq -r '[.data.limits[]? | select(.kind == "weekly_scoped") | .percent] | max // empty' "$cache")
-  local wc sc wu_fmt su_fmt wu_disp su_disp fu_fmt weekly_part
+  # 5 個槽位一律用 // "" 保留位置，避免 jq empty 吞掉中間槽位造成欄位錯位
+  q_fields=$(jq -r '[
+    (.data.seven_day.utilization // ""),
+    (.data.seven_day.resets_at // ""),
+    (.data.five_hour.utilization // ""),
+    (.data.five_hour.resets_at // ""),
+    ([.data.limits[]? | select(.kind == "weekly_scoped") | .percent] | max // ""),
+    "END"
+  ] | map(tostring) | join("\u001f")' "$cache" 2>/dev/null) || q_fields=""
+  IFS=$'\037' read -r wu wr_at su sr_at fu _q_end <<<"$q_fields"
+  local wc sc fc wu_fmt su_fmt wu_disp su_disp fu_fmt weekly_part
   if [[ -n "$wu" ]]; then
-    wc=$(color_for "$wu"); wu_fmt=$(printf '%.0f' "$wu"); wu_disp="${wu_fmt}%"
+    color_for_var wc "$wu"; printf -v wu_fmt '%.0f' "$wu"; wu_disp="${wu_fmt}%"
   else
     wc=$YELLOW; wu_fmt=""; wu_disp="?"
   fi
   if [[ -n "$su" ]]; then
-    sc=$(color_for "$su"); su_fmt=$(printf '%.0f' "$su"); su_disp="${su_fmt}%"
+    color_for_var sc "$su"; printf -v su_fmt '%.0f' "$su"; su_disp="${su_fmt}%"
   else
     sc=$YELLOW; su_fmt=""; su_disp="?"
   fi
-  weekly_part=$(printf '%s%s%s' "$wc" "$wu_disp" "$RST")
+  weekly_part="${wc}${wu_disp}${RST}"
   if [[ -n "$fu" ]]; then
-    fu_fmt=$(printf '%.0f' "$fu")
+    printf -v fu_fmt '%.0f' "$fu"
     if [[ -z "$wu_fmt" ]] || (( wu_fmt < 100 || fu_fmt < 100 )); then
-      weekly_part=$(printf '%s%s%%%s%s / %s%s' "$(color_for "$fu_fmt")" "$fu_fmt" "$RST" "$BLUE" "$RST" "$weekly_part")
+      color_for_var fc "$fu_fmt"
+      weekly_part="${fc}${fu_fmt}%${RST}${BLUE} / ${RST}${weekly_part}"
     fi
   fi
-  local mtime now age age_tag=""
+  local mtime now age age_str age_tag=""
   mtime=$(stat -f %m "$cache" 2>/dev/null) || mtime=0
-  now=$(date +%s)
+  now=${NOW_SEC:-$(date +%s)}
   age=$((now - mtime))
   if (( age >= OLD_AFTER_SECONDS )); then
-    age_tag=$(printf ' %s[%s old]%s' "$YELLOW" "$(fmt_age "$age")" "$BLUE")
-    (( age >= STALE_AFTER_SECONDS )) && age_tag=$(printf ' %s[⚠ %s stale]%s' "$RED" "$(fmt_age "$age")" "$BLUE")
+    fmt_age_var age_str "$age"
+    age_tag=" ${YELLOW}[${age_str} old]${BLUE}"
+    (( age >= STALE_AFTER_SECONDS )) && age_tag=" ${RED}[⚠ ${age_str} stale]${BLUE}"
   fi
   local fail_tag=""
-  [[ -f "$status" ]] && fail_tag=$(printf ' %s⚠%s' "$RED" "$BLUE")
+  [[ -f "$status" ]] && fail_tag=" ${RED}⚠${BLUE}"
+  local sr_disp wr_disp
+  sr_disp=$(fmt_reset "$sr_at")
+  wr_disp=$(fmt_reset "$wr_at")
   printf '%s%s:%s%s %s%s%s%s %s | %s%s %s' \
     "$BLUE" "$name" "$age_tag" "$fail_tag" \
     "$sc" "$su_disp" "$RST" "$BLUE" \
-    "$(fmt_reset "$sr_at")" \
+    "$sr_disp" \
     "$weekly_part" "$BLUE" \
-    "$(fmt_reset "$wr_at")"
+    "$wr_disp"
 }
 
 # 排第一的是「當前 session 實際在燒的帳號」，不是「default dir 登入誰」。
@@ -147,12 +184,19 @@ if [[ -z "$SESSION_EMAIL" ]]; then
 fi
 
 email_from_path() {
-  local p=$1
-  local base=$(basename "$p")
+  local base="${1##*/}"
   base=${base#quota-}
   base=${base%.json}
   base=${base%.status}
   printf '%s' "${base//_at_/@}"
+}
+
+email_from_path_var() {
+  local _b="${2##*/}"
+  _b=${_b#quota-}
+  _b=${_b%.json}
+  _b=${_b%.status}
+  printf -v "$1" '%s' "${_b//_at_/@}"
 }
 
 SIDE_CACHES=()
@@ -163,7 +207,7 @@ MAIN_CACHE=""
 shopt -s nullglob
 for f in "$CACHE_DIR"/quota-*.json "$CACHE_DIR"/quota-*.status; do
   [[ "$f" == *receiver.log ]] && continue
-  email=$(email_from_path "$f")
+  email_from_path_var email "$f"
   [[ -z "$email" || "$email" == "unknown" ]] && continue
   case "$EXCLUDE_EMAILS" in
     *"|$email|"*) continue;;
@@ -193,6 +237,8 @@ if [[ "${1:-}" == "--visible-accounts-json" ]]; then
   } | jq -s '{accounts: .}'
   exit 0
 fi
+
+NOW_SEC=$(date +%s)
 
 if [[ -n "$MAIN_CACHE" ]]; then
   render_segment "$SESSION_EMAIL" "$MAIN_CACHE" "$SESSION_MARK"
