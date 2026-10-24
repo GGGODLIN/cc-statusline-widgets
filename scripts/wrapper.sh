@@ -257,13 +257,24 @@ jqr() { jq -r "$1" <<<"$input" 2>/dev/null; }
 probe_cols() {
   [[ -n "${WT_FORCE_COLS:-}" ]] && { printf '%s' "$WT_FORCE_COLS"; return; }
   [[ "${COLUMNS:-}" =~ ^[0-9]+$ ]] && (( COLUMNS > 0 )) && { printf '%s' "$COLUMNS"; return; }
-  local pid=$$ i tty size _rows
+  local pid=$$ i tty="" size="" _rows tty_memo="$CACHE_DIR/tty-${PPID:-0}.memo"
+  if [[ -f "$tty_memo" ]]; then
+    read -r tty < "$tty_memo" 2>/dev/null || true
+    if [[ -n "$tty" && -e "/dev/$tty" ]]; then
+      read -r _rows size < <(stty size < "/dev/$tty" 2>/dev/null) || true
+      [[ -n "${size:-}" && "$size" -gt 0 ]] 2>/dev/null && { printf '%s' "$size"; return; }
+    fi
+  fi
   for i in 1 2 3 4 5 6 7 8; do
     read -r pid tty < <(ps -o ppid=,tty= -p "$pid" 2>/dev/null) || true
     [[ -z "$pid" || "$pid" == "0" ]] && break
     [[ -z "$tty" || "$tty" == "??" || "$tty" == "?" ]] && continue
     read -r _rows size < <(stty size < "/dev/$tty" 2>/dev/null) || true
-    [[ -n "${size:-}" && "$size" -gt 0 ]] 2>/dev/null && { printf '%s' "$size"; return; }
+    if [[ -n "${size:-}" && "$size" -gt 0 ]] 2>/dev/null; then
+      printf '%s\n' "$tty" > "$tty_memo" 2>/dev/null || true
+      printf '%s' "$size"
+      return
+    fi
   done
   tput cols 2>/dev/null || true
 }
@@ -400,76 +411,77 @@ else
 fi
 model_name="${model_name% (*)}"
 
-# cache health: last-turn hit% + session flush count + bug-induced waste
-# Algorithm and waste formula adapted from https://github.com/AlexZan/cc-cache-monitor
+# cache health: last-turn hit% + idle minutes + compact count
 cache_hit_fmt=""
+hit=""
+idle_ts=""
+compactions=0
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
   t_stat=$(stat -f '%m %z' "$transcript_path" 2>/dev/null)
-  cache_memo="$CACHE_DIR/cache-widget-${transcript_path##*/}.memo"
+  read -r t_mtime t_size <<<"${t_stat:-0 0}"
+  cache_memo="$CACHE_DIR/cache2-widget-${transcript_path##*/}.memo"
   cache_data=""
+  memo_mtime=0 ; memo_size=0 ; memo_calc_ts=0 ; memo_data=""
   if [[ -n "$t_stat" && -f "$cache_memo" ]]; then
-    { read -r memo_stat; read -r memo_data; } < "$cache_memo"
-    [[ "$memo_stat" == "$t_stat" ]] && cache_data="$memo_data"
+    { read -r memo_mtime memo_size memo_calc_ts; read -r memo_data; } < "$cache_memo" 2>/dev/null || true
+    if [[ "$memo_mtime $memo_size" == "$t_stat" ]] \
+       || (( t_size > 65536 && NOW_SEC_RENDER - ${memo_calc_ts:-0} < 10 )); then
+      cache_data="$memo_data"
+    fi
   fi
   if [[ -z "$cache_data" ]]; then
-  cache_data=$(jq -sc '
-    ([.[] | select(.message.usage and .timestamp)]
-      | group_by(.message.id // .timestamp) | map(first)
-      | sort_by(.timestamp)) as $all
-    | ([.[] | select(.type == "system" and (.subtype // "") == "compact_boundary")] | length) as $compactions
-    | [$all[] | .message.usage] as $usages
-    | [$all[]
-        | .message.usage as $u
-        | ($u.cache_read_input_tokens // 0) as $cr
-        | ($u.cache_creation_input_tokens // 0) as $cw
-        | ($u.input_tokens // 0) as $it
-        | ($cr + $cw + $it) as $tot
-        | select($tot > 0 and ($cr * 100 / $tot) >= 50)
-        | $cw] as $healthy
-    | (if ($healthy | length) > 0 then $healthy | min else 0 end) as $base
-    | ($usages | last) as $last
-    | (reduce ($all | sort_by(.timestamp))[] as $m (
-        {w: 0, p: null};
-        $m.message.usage as $u
-        | ($u.cache_read_input_tokens // 0) as $cr
-        | ($u.cache_creation_input_tokens // 0) as $cw
-        | ($u.input_tokens // 0) as $it
-        | ($cr + $cw + $it) as $tot
-        | ($m.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $ts
-        | (if .p == null then 999999 else ($ts - .p) end) as $gap
-        | if $tot > 0 and ($cr * 100 / $tot) < 50 and $gap < 3600 and $cw > $base
-          then {w: (.w + (($cw - $base) * 115 / 100 | floor)), p: $ts}
-          else . + {p: $ts} end
-      ) | .w) as $session_waste
-    | if $last == null then null else
-        ($last.cache_read_input_tokens // 0) as $cr
-        | ($last.cache_creation_input_tokens // 0) as $cw
-        | ($last.input_tokens // 0) as $it
-        | ($cr + $cw + $it) as $tot
-        | (($all | sort_by(.timestamp) | last).timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $last_ts
-        | {
-            hit: (if $tot > 0 then ($cr * 100 / $tot | floor) else -1 end),
-            flushes: ([$usages[1:][]
-              | (.cache_read_input_tokens // 0) as $r
-              | (.cache_creation_input_tokens // 0) as $w
-              | (.input_tokens // 0) as $i
-              | ($r + $w + $i) as $t
-              | select($t > 0 and ($r * 100 / $t) < 50)] | length),
-            session_waste: $session_waste,
-            compactions: $compactions,
-            last_ts: $last_ts
-          }
-      end
-  ' "$transcript_path" 2>/dev/null)
-  if [[ -n "$t_stat" && -n "$cache_data" && -d "$CACHE_DIR" ]]; then
-    memo_tmp=$(mktemp "$CACHE_DIR/.cache-widget.XXXXXX" 2>/dev/null) &&
-      printf '%s\n%s\n' "$t_stat" "$cache_data" > "$memo_tmp" &&
-      mv "$memo_tmp" "$cache_memo"
+    prev_compactions=0
+    if [[ -n "$memo_data" && "$memo_data" != "none" ]]; then
+      read -r _ _ prev_compactions <<<"$memo_data"
+    fi
+    if (( memo_size > 0 && t_size >= memo_size )) && [[ "$prev_compactions" =~ ^[0-9]+$ ]]; then
+      if command -v rg >/dev/null 2>&1; then
+        delta_comp=$(tail -c +$(( memo_size + 1 )) "$transcript_path" 2>/dev/null | rg -Fc '"compact_boundary"' || true)
+      else
+        delta_comp=$(tail -c +$(( memo_size + 1 )) "$transcript_path" 2>/dev/null | command grep -Fc '"compact_boundary"' || true)
+      fi
+      compactions=$(( prev_compactions + ${delta_comp:-0} ))
+    else
+      if command -v rg >/dev/null 2>&1; then
+        compactions=$(rg -Fc '"compact_boundary"' "$transcript_path" 2>/dev/null || true)
+      else
+        compactions=$(command grep -Fc '"compact_boundary"' "$transcript_path" 2>/dev/null || true)
+      fi
+      compactions=${compactions:-0}
+    fi
+    hit_and_ts=$(
+      if (( t_size > 4194304 )); then
+        tail -c 4194304 "$transcript_path" 2>/dev/null | tail -n +2 | tail -n 200
+      else
+        tail -n 200 "$transcript_path" 2>/dev/null
+      fi | jq -Rnr '
+        [inputs | fromjson? | select(.message.usage and .timestamp)]
+        | sort_by(.timestamp) | last as $m
+        | if $m == null then "none" else
+            $m.message.usage as $u
+            | ($u.cache_read_input_tokens // 0) as $cr
+            | ($u.cache_creation_input_tokens // 0) as $cw
+            | ($u.input_tokens // 0) as $it
+            | ($cr + $cw + $it) as $tot
+            | ($m.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $last_ts
+            | "\((if $tot > 0 then ($cr * 100 / $tot | floor) else -1 end)) \($last_ts)"
+          end
+      ' 2>/dev/null
+    )
+    if [[ -n "$hit_and_ts" && "$hit_and_ts" != "none" ]]; then
+      cache_data="$hit_and_ts $compactions"
+    else
+      cache_data="none"
+    fi
+    if [[ -n "$t_stat" && -n "$cache_data" && -d "$CACHE_DIR" ]]; then
+      memo_tmp=$(mktemp "$CACHE_DIR/.cache-widget.XXXXXX" 2>/dev/null) &&
+        printf '%s %s\n%s\n' "$t_stat" "$NOW_SEC_RENDER" "$cache_data" > "$memo_tmp" &&
+        mv "$memo_tmp" "$cache_memo"
+    fi
   fi
-  fi
-  if [[ -n "$cache_data" && "$cache_data" != "null" ]]; then
-    _cd_fields=$(jq -r '[(.hit // ""), (.flushes // 0), (.session_waste // 0), (.last_ts // ""), (.compactions // 0), "END"] | map(tostring) | join("\u001f")' <<<"$cache_data" 2>/dev/null) || _cd_fields=""
-    IFS=$'\037' read -r hit flushes waste idle_ts compactions _cd_end <<<"$_cd_fields"
+  if [[ -n "$cache_data" && "$cache_data" != "none" ]]; then
+    read -r hit idle_ts compactions <<<"$cache_data"
+    : "${compactions:=0}"
 
     if [[ "$hit" == "-1" ]]; then
       cache_hit_fmt="${GRAY}Cache: --${RST}"
@@ -515,12 +527,20 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
   tps_memo="$CACHE_DIR/tps3-widget-${transcript_path##*/}.memo"
   tps_data=""
   if [[ -n "$t_stat" && -f "$tps_memo" ]]; then
-    { read -r memo_stat; read -r memo_data; } < "$tps_memo"
-    [[ "$memo_stat" == "$t_stat" ]] && tps_data="$memo_data"
+    { read -r tps_m_mtime tps_m_size tps_m_calc_ts; read -r memo_data; } < "$tps_memo" 2>/dev/null || true
+    if [[ "$tps_m_mtime $tps_m_size" == "$t_stat" ]] \
+       || (( ${t_size:-0} > 65536 && NOW_SEC_RENDER - ${tps_m_calc_ts:-0} < 10 )); then
+      tps_data="$memo_data"
+    fi
   fi
   if [[ -z "$tps_data" ]]; then
     # tail keeps the cost flat on long sessions; 2000 lines spans far more than 5 responses.
-    tps_data=$(tail -n 2000 "$transcript_path" | jq -Rnr '
+    tps_data=$(
+      if (( ${t_size:-0} > 4194304 )); then
+        tail -c 4194304 "$transcript_path" 2>/dev/null | tail -n +2 | tail -n 2000
+      else
+        tail -n 2000 "$transcript_path" 2>/dev/null
+      fi | jq -Rnr '
       def ep: sub("Z$"; "") | split(".")
         | ((.[0] + "Z") | fromdateiso8601) + (("0." + (.[1] // "0")) | tonumber);
       def med: sort | if length == 0 then null
@@ -567,7 +587,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     ' 2>/dev/null)
     if [[ -n "$t_stat" && -n "$tps_data" && -d "$CACHE_DIR" ]]; then
       memo_tmp=$(mktemp "$CACHE_DIR/.tps-widget.XXXXXX" 2>/dev/null) &&
-        printf '%s\n%s\n' "$t_stat" "$tps_data" > "$memo_tmp" &&
+        printf '%s %s\n%s\n' "$t_stat" "$NOW_SEC_RENDER" "$tps_data" > "$memo_tmp" &&
         mv "$memo_tmp" "$tps_memo"
     fi
   fi
@@ -587,7 +607,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
   fi
 fi
 
-session_cost_fmt=$(awk -v c="$session_cost_usd" 'BEGIN { printf "$%.2f", c }')
+printf -v session_cost_fmt '$%.2f' "${session_cost_usd:-0}" 2>/dev/null || session_cost_fmt='$0.00'
 
 git_branch_fmt="⎇ no git"
 git_ab_fmt="(no git)"
@@ -595,29 +615,53 @@ git_dirty=0
 # One porcelain v2 call yields branch, upstream, ahead/behind and dirty marks (single call
 # from coralline). GIT_OPTIONAL_LOCKS=0 stops status from refreshing .git/index under
 # index.lock, which at a 1s refresh collided with commits run in the same second.
-if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null \
-   && git_status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v2 --branch 2>/dev/null); then
-  # \037, not a tab: read collapses runs of whitespace IFS, so an empty marks field would vanish.
-  IFS=$'\037' read -r branch git_marks upstream ahead behind < <(awk '
-    /^# branch\.oid /      { oid = substr($3, 1, 7) }
-    /^# branch\.head /     { head = $3 }
-    /^# branch\.upstream / { up = $3 }
-    /^# branch\.ab /       { a = substr($3, 2); b = substr($4, 2) }
-    /^[12] / { if (substr($2,1,1) != ".") s=1; if (substr($2,2,1) != ".") m=1 }
-    /^u /    { m=1 }
-    /^\? /   { u=1 }
-    END {
-      if (head == "(detached)" || head == "") head = (oid == "(initial)" || oid == "") ? "?" : oid
-      printf "%s\037%s\037%s\037%s\037%s\n", head, (s?"+":"") (m?"!":"") (u?"?":""), up, a+0, b+0
-    }' <<<"$git_status")
-  [[ -n "$git_marks" ]] && git_dirty=1
-  git_branch_fmt="⎇ ${branch}${git_marks}"
-  if [[ -n "$upstream" ]]; then
-    git_ab_fmt=""
-    (( ahead > 0 ))  && git_ab_fmt="⇡${ahead}"
-    (( behind > 0 )) && git_ab_fmt="${git_ab_fmt}⇣${behind}"
-  else
-    git_ab_fmt="(no upstream)"
+if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null; then
+  git_memo="$CACHE_DIR/git-widget-${cwd//\//_}.memo"
+  git_dir=".git"
+  if [[ -f .git ]]; then
+    read -r _ git_dir < .git 2>/dev/null || git_dir=".git"
+  fi
+  g_stat=$(stat -f '%Fm:%z' "$git_dir/HEAD" "$git_dir/index" 2>/dev/null | tr '\n' '|')
+  : "${g_stat:=no-git-dir}"
+  git_cached=0
+  if [[ -f "$git_memo" ]]; then
+    { read -r g_memo_ts g_memo_stat; IFS=$'\037' read -r git_dirty git_branch_fmt git_ab_fmt; } < "$git_memo" 2>/dev/null || true
+    if (( NOW_SEC_RENDER - ${g_memo_ts:-0} < 5 )) && [[ "$g_memo_stat" == "$g_stat" ]]; then
+      git_cached=1
+    else
+      git_branch_fmt="⎇ no git" ; git_ab_fmt="(no git)" ; git_dirty=0
+    fi
+  fi
+  if (( ! git_cached )); then
+    if git_status=$(GIT_OPTIONAL_LOCKS=0 git status --porcelain=v2 --branch 2>/dev/null); then
+      # \037, not a tab: read collapses runs of whitespace IFS, so an empty marks field would vanish.
+      IFS=$'\037' read -r branch git_marks upstream ahead behind < <(awk '
+        /^# branch\.oid /      { oid = substr($3, 1, 7) }
+        /^# branch\.head /     { head = $3 }
+        /^# branch\.upstream / { up = $3 }
+        /^# branch\.ab /       { a = substr($3, 2); b = substr($4, 2) }
+        /^[12] / { if (substr($2,1,1) != ".") s=1; if (substr($2,2,1) != ".") m=1 }
+        /^u /    { m=1 }
+        /^\? /   { u=1 }
+        END {
+          if (head == "(detached)" || head == "") head = (oid == "(initial)" || oid == "") ? "?" : oid
+          printf "%s\037%s\037%s\037%s\037%s\n", head, (s?"+":"") (m?"!":"") (u?"?":""), up, a+0, b+0
+        }' <<<"$git_status")
+      [[ -n "$git_marks" ]] && git_dirty=1
+      git_branch_fmt="⎇ ${branch}${git_marks}"
+      if [[ -n "$upstream" ]]; then
+        git_ab_fmt=""
+        (( ahead > 0 ))  && git_ab_fmt="⇡${ahead}"
+        (( behind > 0 )) && git_ab_fmt="${git_ab_fmt}⇣${behind}"
+      else
+        git_ab_fmt="(no upstream)"
+      fi
+    fi
+    if [[ -d "$CACHE_DIR" ]]; then
+      memo_tmp=$(mktemp "$CACHE_DIR/.git-widget.XXXXXX" 2>/dev/null) &&
+        printf '%s %s\n%s\037%s\037%s\n' "$NOW_SEC_RENDER" "$g_stat" "$git_dirty" "$git_branch_fmt" "$git_ab_fmt" > "$memo_tmp" &&
+        mv "$memo_tmp" "$git_memo"
+    fi
   fi
 fi
 
@@ -1064,7 +1108,30 @@ fmt_grok_bot_quota() {
 
 usage_part=""
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
-  usage_part=$(CC_SESSION_ID="$session_id" "$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
+  usage_memo="$CACHE_DIR/usage-pill-${session_id:-none}.memo"
+  shopt -s nullglob
+  _u_files=("$QUOTA_CACHE_DIR"/quota-*.json "$QUOTA_CACHE_DIR"/quota-*.status "$CACHE_DIR/session-account.json")
+  shopt -u nullglob
+  u_stat="empty"
+  (( ${#_u_files[@]} > 0 )) && u_stat=$(stat -f '%Fm:%z' "${_u_files[@]}" 2>/dev/null | tr '\n' '|')
+  : "${u_stat:=empty}"
+  u_cached=0
+  if [[ -f "$usage_memo" ]]; then
+    { read -r u_memo_ts u_memo_stat; read -r usage_part; } < "$usage_memo" 2>/dev/null || true
+    if (( NOW_SEC_RENDER - ${u_memo_ts:-0} < 5 )) && [[ "$u_memo_stat" == "$u_stat" ]]; then
+      u_cached=1
+    else
+      usage_part=""
+    fi
+  fi
+  if (( ! u_cached )); then
+    usage_part=$(CC_SESSION_ID="$session_id" "$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
+    if [[ -d "$CACHE_DIR" ]]; then
+      memo_tmp=$(mktemp "$CACHE_DIR/.usage-pill.XXXXXX" 2>/dev/null) &&
+        printf '%s %s\n%s\n' "$NOW_SEC_RENDER" "$u_stat" "$usage_part" > "$memo_tmp" &&
+        mv "$memo_tmp" "$usage_memo"
+    fi
+  fi
 fi
 trim_ws() {
   local s="$1"
@@ -1098,11 +1165,48 @@ if [[ -n "$usage_part" ]]; then
   done
 fi
 
-fmt_codex_quota >/dev/null 2>&1 || true
+vendor_memo="$CACHE_DIR/vendor-pills.memo"
+_v_samples="${GROK_QUOTA_SAMPLES:-$HOME/.cli-proxy-api/grok-quota-samples.jsonl}"
+v_stat=$(stat -f '%Fm:%z' \
+  "$QUOTA_CACHE_DIR/vendor-codex-local.json" \
+  "$QUOTA_CACHE_DIR/vendor-codex-local.status" \
+  "$_v_samples" \
+  "$QUOTA_CACHE_DIR/vendor-grok-bot-local.json" \
+  "$QUOTA_CACHE_DIR/vendor-grok-bot-local.status" \
+  2>/dev/null | tr '\n' '|')
+: "${v_stat:=empty}"
+v_cached=0
+if [[ -f "$vendor_memo" ]]; then
+  {
+    read -r v_memo_ts v_memo_stat
+    IFS=$'\037' read -r CODEX_PILL_OUT CODEX_WEEKLY_REMAINING_PCT CODEX_WEEKLY_USED_PCT CODEX_WEEKLY_RESET_AT \
+      GROK_PILL_OUT GROK_WEEKLY_USED_PCT GROK_WEEKLY_RESET_AT \
+      GROK_BOT_OUT GROK_BOT_USED_PCT GROK_BOT_RESET_AT _v_end
+  } < "$vendor_memo" 2>/dev/null || true
+  if (( NOW_SEC_RENDER - ${v_memo_ts:-0} < 5 )) && [[ "$v_memo_stat" == "$v_stat" ]]; then
+    v_cached=1
+  else
+    CODEX_PILL_OUT="" ; CODEX_WEEKLY_REMAINING_PCT="" ; CODEX_WEEKLY_USED_PCT="" ; CODEX_WEEKLY_RESET_AT=""
+    GROK_PILL_OUT="" ; GROK_WEEKLY_USED_PCT="" ; GROK_WEEKLY_RESET_AT=""
+    GROK_BOT_OUT="" ; GROK_BOT_USED_PCT="" ; GROK_BOT_RESET_AT=""
+  fi
+fi
+if (( ! v_cached )); then
+  fmt_codex_quota >/dev/null 2>&1 || true
+  fmt_grok_quota >/dev/null 2>&1 || true
+  fmt_grok_bot_quota >/dev/null 2>&1 || true
+  if [[ -d "$CACHE_DIR" ]]; then
+    memo_tmp=$(mktemp "$CACHE_DIR/.vendor-pills.XXXXXX" 2>/dev/null) &&
+      printf '%s %s\n%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037END\n' \
+        "$NOW_SEC_RENDER" "$v_stat" \
+        "$CODEX_PILL_OUT" "$CODEX_WEEKLY_REMAINING_PCT" "$CODEX_WEEKLY_USED_PCT" "$CODEX_WEEKLY_RESET_AT" \
+        "$GROK_PILL_OUT" "$GROK_WEEKLY_USED_PCT" "$GROK_WEEKLY_RESET_AT" \
+        "$GROK_BOT_OUT" "$GROK_BOT_USED_PCT" "$GROK_BOT_RESET_AT" > "$memo_tmp" &&
+      mv "$memo_tmp" "$vendor_memo"
+  fi
+fi
 [[ -n "$CODEX_PILL_OUT" ]] && push_seg 2 "$WT_BG_CODEX" "$CODEX_PILL_OUT"
 
-fmt_grok_quota >/dev/null 2>&1 || true
-fmt_grok_bot_quota >/dev/null 2>&1 || true
 grok_seg="$GROK_PILL_OUT"
 if [[ -n "$GROK_BOT_OUT" ]]; then
   if [[ -n "$grok_seg" ]]; then grok_seg="${grok_seg}${BLUE} | ${RST}${GROK_BOT_OUT}"
@@ -1113,7 +1217,7 @@ fi
 
 # ----- Line 3 -----
 # context-bar
-ctx_used_int=$(awk -v p="$ctx_used_pct" 'BEGIN { printf "%.0f", p }')
+printf -v ctx_used_int '%.0f' "${ctx_used_pct:-0}" 2>/dev/null || ctx_used_int=0
 if (( ctx_size > 0 )); then
   ctx_used_k=$(( ctx_used_tokens / 1000 ))
   ctx_total_k=$(( ctx_size / 1000 ))
@@ -1266,8 +1370,6 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg grok_bot_used_pct "$GROK_BOT_USED_PCT" \
     --arg grok_bot_reset_at "$GROK_BOT_RESET_AT" \
     --arg cache_hit   "${hit:-}" \
-    --arg cache_flushes "${flushes:-0}" \
-    --arg cache_waste "${waste:-0}" \
     --arg cache_idle  "${idle:-}" \
     --arg cache_compactions "${compactions:-0}" \
     --arg tps         "$tps" \

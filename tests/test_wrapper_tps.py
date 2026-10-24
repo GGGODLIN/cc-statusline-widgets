@@ -223,5 +223,39 @@ class WrapperTpsTests(unittest.TestCase):
     self.assertEqual(entry["tps_decode"], "75")
     self.assertEqual(entry["ttft"], "2.0")
 
+  def test_cache_pill_shows_hit_and_compactions_without_legacy_log_fields(self):
+    path = self.root / "transcript.jsonl"
+    rows = [
+      {"type": "system", "subtype": "compact_boundary", "timestamp": iso(1)},
+      {"type": "system", "subtype": "compact_boundary", "timestamp": iso(2)},
+      {
+        "type": "assistant",
+        "timestamp": iso(3),
+        "message": {
+          "id": "msg_cache",
+          "model": "claude-opus-5-5",
+          "content": [{"type": "text"}],
+          "usage": {
+            "cache_read_input_tokens": 900,
+            "cache_creation_input_tokens": 50,
+            "input_tokens": 50,
+            "output_tokens": 100,
+          },
+        },
+      },
+    ]
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    self.input["transcript_path"] = str(path)
+
+    output = self.run_wrapper(log=True)
+
+    self.assertIn("Cache: 90%", output)
+    self.assertIn("⧉  2", output)
+    entry = self.read_log()
+    self.assertEqual(entry["cache_hit"], "90")
+    self.assertEqual(entry["cache_compactions"], "2")
+    self.assertNotIn("cache_flushes", entry)
+    self.assertNotIn("cache_waste", entry)
+
 if __name__ == "__main__":
   unittest.main()
