@@ -257,10 +257,10 @@ jqr() { jq -r "$1" <<<"$input" 2>/dev/null; }
 probe_cols() {
   [[ -n "${WT_FORCE_COLS:-}" ]] && { printf '%s' "$WT_FORCE_COLS"; return; }
   [[ "${COLUMNS:-}" =~ ^[0-9]+$ ]] && (( COLUMNS > 0 )) && { printf '%s' "$COLUMNS"; return; }
-  local pid=$$ i tty="" size="" _rows tty_memo="$CACHE_DIR/tty-${PPID:-0}.memo"
+  local pid=$$ i tty="" tty_ts=0 size="" _rows tty_memo="$CACHE_DIR/tty-${PPID:-0}.memo"
   if [[ -f "$tty_memo" ]]; then
-    read -r tty < "$tty_memo" 2>/dev/null || true
-    if [[ -n "$tty" && -e "/dev/$tty" ]]; then
+    read -r tty_ts tty < "$tty_memo" 2>/dev/null || true
+    if (( NOW_SEC_RENDER - ${tty_ts:-0} < 60 )) && [[ -n "$tty" && -e "/dev/$tty" ]]; then
       read -r _rows size < <(stty size < "/dev/$tty" 2>/dev/null) || true
       [[ -n "${size:-}" && "$size" -gt 0 ]] 2>/dev/null && { printf '%s' "$size"; return; }
     fi
@@ -271,7 +271,7 @@ probe_cols() {
     [[ -z "$tty" || "$tty" == "??" || "$tty" == "?" ]] && continue
     read -r _rows size < <(stty size < "/dev/$tty" 2>/dev/null) || true
     if [[ -n "${size:-}" && "$size" -gt 0 ]] 2>/dev/null; then
-      printf '%s\n' "$tty" > "$tty_memo" 2>/dev/null || true
+      printf '%s %s\n' "$NOW_SEC_RENDER" "$tty" > "$tty_memo" 2>/dev/null || true
       printf '%s' "$size"
       return
     fi
@@ -435,25 +435,30 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
       read -r _ _ prev_compactions <<<"$memo_data"
     fi
     if (( memo_size > 0 && t_size >= memo_size )) && [[ "$prev_compactions" =~ ^[0-9]+$ ]]; then
-      if command -v rg >/dev/null 2>&1; then
-        delta_comp=$(tail -c +$(( memo_size + 1 )) "$transcript_path" 2>/dev/null | rg -Fc '"compact_boundary"' || true)
+      span=$(( t_size - memo_size ))
+      if (( span == 0 )); then
+        delta_comp=0
+      elif command -v rg >/dev/null 2>&1; then
+        delta_comp=$(tail -c +$(( memo_size + 1 )) "$transcript_path" 2>/dev/null | head -c "$span" | rg -Fc '"compact_boundary"' || true)
       else
-        delta_comp=$(tail -c +$(( memo_size + 1 )) "$transcript_path" 2>/dev/null | command grep -Fc '"compact_boundary"' || true)
+        delta_comp=$(tail -c +$(( memo_size + 1 )) "$transcript_path" 2>/dev/null | head -c "$span" | command grep -Fc '"compact_boundary"' || true)
       fi
       compactions=$(( prev_compactions + ${delta_comp:-0} ))
     else
-      if command -v rg >/dev/null 2>&1; then
-        compactions=$(rg -Fc '"compact_boundary"' "$transcript_path" 2>/dev/null || true)
+      if (( t_size <= 0 )); then
+        compactions=0
+      elif command -v rg >/dev/null 2>&1; then
+        compactions=$(head -c "$t_size" "$transcript_path" 2>/dev/null | rg -Fc '"compact_boundary"' || true)
       else
-        compactions=$(command grep -Fc '"compact_boundary"' "$transcript_path" 2>/dev/null || true)
+        compactions=$(head -c "$t_size" "$transcript_path" 2>/dev/null | command grep -Fc '"compact_boundary"' || true)
       fi
       compactions=${compactions:-0}
     fi
     hit_and_ts=$(
       if (( t_size > 4194304 )); then
-        tail -c 4194304 "$transcript_path" 2>/dev/null | tail -n +2 | tail -n 200
+        head -c "$t_size" "$transcript_path" 2>/dev/null | tail -c 4194304 | tail -n +2 | tail -n 200
       else
-        tail -n 200 "$transcript_path" 2>/dev/null
+        head -c "$t_size" "$transcript_path" 2>/dev/null | tail -n 200
       fi | jq -Rnr '
         [inputs | fromjson? | select(.message.usage and .timestamp)]
         | sort_by(.timestamp) | last as $m
@@ -471,7 +476,7 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
     if [[ -n "$hit_and_ts" && "$hit_and_ts" != "none" ]]; then
       cache_data="$hit_and_ts $compactions"
     else
-      cache_data="none"
+      cache_data="- - $compactions"
     fi
     if [[ -n "$t_stat" && -n "$cache_data" && -d "$CACHE_DIR" ]]; then
       memo_tmp=$(mktemp "$CACHE_DIR/.cache-widget.XXXXXX" 2>/dev/null) &&
@@ -482,10 +487,12 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
   if [[ -n "$cache_data" && "$cache_data" != "none" ]]; then
     read -r hit idle_ts compactions <<<"$cache_data"
     : "${compactions:=0}"
+    [[ "$hit" == "-" ]] && hit=""
+    [[ "$idle_ts" == "-" ]] && idle_ts=""
 
     if [[ "$hit" == "-1" ]]; then
       cache_hit_fmt="${GRAY}Cache: --${RST}"
-    else
+    elif [[ -n "$hit" ]]; then
       if   (( hit < 50 )); then hit_color="$RED";    warn="⚠"
       elif (( hit < 90 )); then hit_color="$YELLOW"; warn=""
       else                       hit_color="$GREEN"; warn=""
@@ -616,7 +623,9 @@ git_dirty=0
 # from coralline). GIT_OPTIONAL_LOCKS=0 stops status from refreshing .git/index under
 # index.lock, which at a 1s refresh collided with commits run in the same second.
 if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null; then
-  git_memo="$CACHE_DIR/git-widget-${cwd//\//_}.memo"
+  git_key="${cwd//_/__}"
+  git_key="${git_key//\//_s_}"
+  git_memo="$CACHE_DIR/git-widget-${git_key}.memo"
   git_dir=".git"
   if [[ -f .git ]]; then
     read -r _ git_dir < .git 2>/dev/null || git_dir=".git"
@@ -625,8 +634,8 @@ if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null; then
   : "${g_stat:=no-git-dir}"
   git_cached=0
   if [[ -f "$git_memo" ]]; then
-    { read -r g_memo_ts g_memo_stat; IFS=$'\037' read -r git_dirty git_branch_fmt git_ab_fmt; } < "$git_memo" 2>/dev/null || true
-    if (( NOW_SEC_RENDER - ${g_memo_ts:-0} < 5 )) && [[ "$g_memo_stat" == "$g_stat" ]]; then
+    { read -r g_memo_ts g_memo_stat; read -r g_memo_cwd; IFS=$'\037' read -r git_dirty git_branch_fmt git_ab_fmt; } < "$git_memo" 2>/dev/null || true
+    if (( NOW_SEC_RENDER - ${g_memo_ts:-0} < 5 )) && [[ "$g_memo_stat" == "$g_stat" && "$g_memo_cwd" == "$cwd" ]]; then
       git_cached=1
     else
       git_branch_fmt="⎇ no git" ; git_ab_fmt="(no git)" ; git_dirty=0
@@ -659,7 +668,7 @@ if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null; then
     fi
     if [[ -d "$CACHE_DIR" ]]; then
       memo_tmp=$(mktemp "$CACHE_DIR/.git-widget.XXXXXX" 2>/dev/null) &&
-        printf '%s %s\n%s\037%s\037%s\n' "$NOW_SEC_RENDER" "$g_stat" "$git_dirty" "$git_branch_fmt" "$git_ab_fmt" > "$memo_tmp" &&
+        printf '%s %s\n%s\n%s\037%s\037%s\n' "$NOW_SEC_RENDER" "$g_stat" "$cwd" "$git_dirty" "$git_branch_fmt" "$git_ab_fmt" > "$memo_tmp" &&
         mv "$memo_tmp" "$git_memo"
     fi
   fi
@@ -1110,7 +1119,7 @@ usage_part=""
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
   usage_memo="$CACHE_DIR/usage-pill-${session_id:-none}.memo"
   shopt -s nullglob
-  _u_files=("$QUOTA_CACHE_DIR"/quota-*.json "$QUOTA_CACHE_DIR"/quota-*.status "$CACHE_DIR/session-account.json")
+  _u_files=("$QUOTA_CACHE_DIR"/quota-*.json "$QUOTA_CACHE_DIR"/quota-*.status)
   shopt -u nullglob
   u_stat="empty"
   (( ${#_u_files[@]} > 0 )) && u_stat=$(stat -f '%Fm:%z' "${_u_files[@]}" 2>/dev/null | tr '\n' '|')

@@ -27,31 +27,38 @@ while IFS=$'\t' read -r kind pid cmd; do
   fi
   full_cmd=$(ps -p "$pid" -o command= 2>/dev/null | head -1)
   [[ -n "$full_cmd" ]] || continue
+  lsof_out=$(lsof -p "$pid" 2>/dev/null || true)
+  revoked=$(printf '%s\n' "$lsof_out" | command grep -c "(revoked)" || true)
+  cc_out=$(printf '%s\n' "$lsof_out" | awk '/\/(private\/)?tmp\/claude-[0-9]+\/.*\/tasks\/[^ ]+\.output$/ { print $NF; exit }')
+  if (( ${revoked:-0} >= 2 )) || [[ -n "$cc_out" ]]; then
+    orphan_count=$(( orphan_count + 1 ))
+    continue
+  fi
   case "$full_cmd" in
-    *"/.claude/scripts/cc-statusline/"*|*"/.claude/hooks/"*|*"/.local/libexec/"*|*"/.litellm-venv/"*|*"/.magpie-machine/"*|*"/.cache/uv/"*|*"/Library/Input Methods/0c.app/"*|*"/Library/DevSpace/"*|*"/Applications/ChatGPT.app/"*|*"chrome-devtools-mcp"*|*"native_client_offline.py"*|*"playtest_"*|*"msw_reverse"*)
+    *"/.claude/scripts/cc-statusline/daemon.sh"*|*"/.claude/scripts/cc-statusline/session-account-receiver.py"*|*"/.claude/hooks/projects-tripwire.sh"*|*"/.local/libexec/tokenbar-sampler/"*|*"/.litellm-venv/bin/litellm"*|*"/.magpie-machine/bin/"*|*"/.magpie-machine/native-bin/"*|*"/bin/semble"*|*"/Library/Input Methods/0c.app/"*|*"/Library/DevSpace/"*|*"/Applications/ChatGPT.app/"*|*"chrome-devtools-mcp"*|*"scripts/native_client_offline.py"*|*"scripts/playtest_monitor.py"*|*"scripts/playtest_player_runner.py"*)
       continue ;;
   esac
   if [[ "$kind" == "orphan_tool" ]]; then
     orphan_count=$(( orphan_count + 1 ))
     continue
   fi
-  lsof_out=$(lsof -p "$pid" 2>/dev/null || true)
-  revoked=$(printf '%s\n' "$lsof_out" | command grep -c "(revoked)" || true)
-  cc_out=$(printf '%s\n' "$lsof_out" | awk '/\/(private\/)?tmp\/claude-[0-9]+\/.*\/tasks\/[^ ]+\.output$/ { print $NF; exit }')
-  if [[ "$kind" == "orphan_shell" ]]; then
-    if (( ${revoked:-0} >= 2 )) || [[ -n "$cc_out" ]]; then
+  if [[ "$kind" == "orphan_runtime" || "$kind" == "orphan_runtime_giant" ]]; then
+    is_stdin_orphan=$(awk '
+      {
+        c = $1; sub(/^.*\//, "", c)
+        if (c !~ /^([Pp]ython[0-9.]*|node|bun)$/) exit 1
+        if (NF < 2 || $NF != "-") exit 1
+        for (i = 2; i < NF; i++) {
+          if ($i !~ /^-[A-Za-z]+$/) exit 1
+        }
+        print 1; exit 0
+      }
+    ' <<<"$full_cmd" 2>/dev/null || echo 0)
+    if (( ${is_stdin_orphan:-0} == 1 )); then
       orphan_count=$(( orphan_count + 1 ))
+    elif [[ "$kind" == "orphan_runtime_giant" ]]; then
+      hot_count=$(( hot_count + 1 ))
     fi
-  elif [[ "$kind" == "orphan_runtime" ]]; then
-    is_stdin_orphan=0
-    case "$full_cmd" in
-      *" -"|*" - "*|*" -I -"|*" -I - "*|*" -u -"|*" -u - "*) is_stdin_orphan=1 ;;
-    esac
-    if (( ${revoked:-0} >= 2 )) || [[ -n "$cc_out" ]] || (( is_stdin_orphan )); then
-      orphan_count=$(( orphan_count + 1 ))
-    fi
-  elif [[ "$kind" == "orphan_runtime_giant" ]]; then
-    orphan_count=$(( orphan_count + 1 ))
   fi
 done < <(printf '%s\n' "$ps_out" | awk -v skip_age="${ORPHAN_SKIP_MIN_AGE:-0}" '
   NR == 1 { next }

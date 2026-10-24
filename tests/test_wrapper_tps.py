@@ -257,5 +257,43 @@ class WrapperTpsTests(unittest.TestCase):
     self.assertNotIn("cache_flushes", entry)
     self.assertNotIn("cache_waste", entry)
 
+  def test_compaction_count_survives_tail_window_without_usage(self):
+    path = self.root / "transcript.jsonl"
+    usage_row = {
+      "type": "assistant",
+      "timestamp": iso(10),
+      "message": {
+        "id": "msg_1",
+        "model": "claude-opus-5-5",
+        "content": [{"type": "text"}],
+        "usage": {
+          "cache_read_input_tokens": 900,
+          "cache_creation_input_tokens": 50,
+          "input_tokens": 50,
+          "output_tokens": 100,
+        },
+      },
+    }
+    initial = [
+      {"type": "system", "subtype": "compact_boundary", "timestamp": iso(1)},
+      {"type": "system", "subtype": "compact_boundary", "timestamp": iso(2)},
+      {"type": "system", "subtype": "compact_boundary", "timestamp": iso(3)},
+      usage_row,
+    ]
+    path.write_text("".join(json.dumps(r) + "\n" for r in initial))
+    self.input["transcript_path"] = str(path)
+    self.assertIn("⧉  3", self.run_wrapper())
+
+    # Append >200 non-usage rows so the tail window has no usage record
+    with path.open("a") as f:
+      for i in range(210):
+        f.write(json.dumps({"type": "user", "timestamp": iso(20 + i), "message": {"role": "user", "content": "x"}}) + "\n")
+    self.run_wrapper()
+
+    # Append a new usage row without new compactions; count must still be 3
+    with path.open("a") as f:
+      f.write(json.dumps({**usage_row, "timestamp": iso(500), "message": {**usage_row["message"], "id": "msg_2"}}) + "\n")
+    self.assertIn("⧉  3", self.run_wrapper())
+
 if __name__ == "__main__":
   unittest.main()
