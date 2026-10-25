@@ -435,30 +435,35 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
       read -r _ _ prev_compactions <<<"$memo_data"
     fi
     if (( memo_size > 0 && t_size >= memo_size )) && [[ "$prev_compactions" =~ ^[0-9]+$ ]]; then
-      span=$(( t_size - memo_size ))
-      if (( span == 0 )); then
-        delta_comp=0
-      elif command -v rg >/dev/null 2>&1; then
-        delta_comp=$(tail -c +$(( memo_size + 1 )) "$transcript_path" 2>/dev/null | head -c "$span" | rg -Fc '"compact_boundary"' || true)
-      else
-        delta_comp=$(tail -c +$(( memo_size + 1 )) "$transcript_path" 2>/dev/null | head -c "$span" | command grep -Fc '"compact_boundary"' || true)
-      fi
-      compactions=$(( prev_compactions + ${delta_comp:-0} ))
+      comp_base=$prev_compactions
+      comp_offset=$memo_size
+      comp_span=$(( t_size - memo_size ))
     else
-      if (( t_size <= 0 )); then
-        compactions=0
-      elif command -v rg >/dev/null 2>&1; then
-        compactions=$(head -c "$t_size" "$transcript_path" 2>/dev/null | rg -Fc '"compact_boundary"' || true)
-      else
-        compactions=$(head -c "$t_size" "$transcript_path" 2>/dev/null | command grep -Fc '"compact_boundary"' || true)
-      fi
-      compactions=${compactions:-0}
+      comp_base=0
+      comp_offset=0
+      comp_span=$t_size
     fi
+    if (( comp_span <= 0 )); then
+      delta_comp=0
+    else
+      delta_comp=$(perl -e '
+        open F, "<", $ARGV[0] or exit;
+        seek F, $ARGV[1], 0;
+        $r = $ARGV[2]; $c = 0;
+        while ($r > 0 && defined($l = <F>)) {
+          if (length($l) > $r) { $l = substr($l, 0, $r); $r = 0; }
+          else { $r -= length($l); }
+          $c++ if index($l, "\"compact_boundary\"") >= 0;
+        }
+        print "$c\n";
+      ' "$transcript_path" "$comp_offset" "$comp_span" 2>/dev/null || echo 0)
+    fi
+    compactions=$(( comp_base + ${delta_comp:-0} ))
     hit_and_ts=$(
       if (( t_size > 4194304 )); then
-        head -c "$t_size" "$transcript_path" 2>/dev/null | tail -c 4194304 | tail -n +2 | tail -n 200
+        tail -c 4194304 "$transcript_path" 2>/dev/null | tail -n +2 | tail -n 200
       else
-        head -c "$t_size" "$transcript_path" 2>/dev/null | tail -n 200
+        tail -n 200 "$transcript_path" 2>/dev/null
       fi | jq -Rnr '
         [inputs | fromjson? | select(.message.usage and .timestamp)]
         | sort_by(.timestamp) | last as $m
