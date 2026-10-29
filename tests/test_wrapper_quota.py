@@ -427,6 +427,56 @@ class WrapperQuotaContractTests(unittest.TestCase):
     self.assertEqual(entry["codex_weekly_reset_at"], "")
     self.assertEqual(WRAPPER.read_text().count("--arg codex_weekly_"), 3)
 
+  def devin_pool_cache(
+    self,
+    *,
+    fetched_at=None,
+    u1=15,
+    r1_in=5400,
+    u7=8,
+    r7_in=3 * 86400 + 5400,
+    avail=37,
+    total=41,
+    err_seats=0,
+    balance="15042.53",
+  ):
+    return {
+      "fetched_at": self.now if fetched_at is None else fetched_at,
+      "data": {
+        "used_1d_pct": u1,
+        "reset_1d_at": self.now + r1_in,
+        "used_7d_pct": u7,
+        "reset_7d_at": self.now + r7_in,
+        "avail_seats": avail,
+        "total_seats": total,
+        "error_seats": err_seats,
+        "balance_usd": balance,
+      },
+    }
+
+  def test_devin_pool_renders_1d_7d_and_seat_ratio_and_logs_fields(self):
+    self.write_json("vendor-devin-pool.json", self.devin_pool_cache())
+
+    output = self.run_wrapper(log=True)
+
+    self.assertIn("Devin: 15% 1h30m | 8% 3d1h (37/41)", output)
+    month = datetime.now().strftime("%Y-%m")
+    log_path = self.home / ".claude" / "projects" / "widget-log" / f"{month}.jsonl"
+    entry = json.loads(log_path.read_text().splitlines()[-1])
+    self.assertEqual(entry["devin_1d_used_pct"], "15")
+    self.assertEqual(entry["devin_7d_used_pct"], "8")
+    self.assertEqual(entry["devin_avail_seats"], "37")
+    self.assertEqual(entry["devin_total_seats"], "41")
+    self.assertEqual(entry["devin_balance_usd"], "15042.53")
+
+  def test_devin_pool_stale_and_status_override(self):
+    self.write_json("vendor-devin-pool.json", self.devin_pool_cache(fetched_at=self.now - 901))
+    self.assertIn("Devin: stale", self.run_wrapper())
+
+    self.write_json("vendor-devin-pool.json", self.devin_pool_cache(fetched_at=self.now - 5))
+    self.write_json("vendor-devin-pool.status", {"failed_at": self.now, "reason": "network-error"})
+    self.assertIn("Devin: network-error", self.run_wrapper())
+
 
 if __name__ == "__main__":
   unittest.main()

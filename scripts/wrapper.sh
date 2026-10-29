@@ -57,6 +57,7 @@ WT_BG_VENDOR_LEGACY=${WT_BG_VENDOR:-}
 WT_BG_VENDOR=${WT_BG_VENDOR:-${VL_BG_CLOCK:-70,80,110}}
 WT_BG_CODEX=${WT_BG_CODEX:-${WT_BG_VENDOR_LEGACY:-${VL_BG_STYLE:-96}}}
 WT_BG_GROK=${WT_BG_GROK:-${WT_BG_VENDOR_LEGACY:-${VL_BG_CLOCK:-70,80,110}}}
+WT_BG_DEVIN=${WT_BG_DEVIN:-${VL_BG_DEVIN:-24,92,102}}
 WT_BG_GLM=${WT_BG_GLM:-${VL_BG_GLM:-99}}
 WT_BG_GLM_PEAK=${WT_BG_GLM_PEAK:-${VL_BG_GLM_PEAK:-88}}
 WT_BG_AGENTS=${WT_BG_AGENTS:-${VL_BG_AGENTS:-${VL_BG_DURATION:-60}}}
@@ -158,6 +159,7 @@ GLM_5H_PCT="" ; GLM_W_PCT="" ; GLM_LEVEL="" ; GLM_PILL_OUT="" ; GLM_PILL_BG=""
 CODEX_WEEKLY_REMAINING_PCT="" ; CODEX_WEEKLY_USED_PCT="" ; CODEX_WEEKLY_RESET_AT="" ; CODEX_PILL_OUT=""
 GROK_WEEKLY_USED_PCT="" ; GROK_WEEKLY_RESET_AT="" ; GROK_PILL_OUT=""
 GROK_BOT_USED_PCT="" ; GROK_BOT_RESET_AT="" ; GROK_BOT_OUT=""
+DEVIN_1D_USED_PCT="" ; DEVIN_7D_USED_PCT="" ; DEVIN_AVAIL_SEATS="" ; DEVIN_TOTAL_SEATS="" ; DEVIN_BALANCE_USD="" ; DEVIN_PILL_OUT=""
 S1_BG=() ; S1_TX=() ; S2_BG=() ; S2_TX=() ; S3_BG=() ; S3_TX=()
 push_seg() {  # $1=line-no $2=bg $3=text
   eval "S${1}_BG[\${#S${1}_BG[@]}]=\$2 ; S${1}_TX[\${#S${1}_TX[@]}]=\$3"
@@ -1120,6 +1122,93 @@ fmt_grok_bot_quota() {
   printf '%s' "$GROK_BOT_OUT"
 }
 
+# Devin pool aggregate health; producer is devin-pool-usage.mjs on the daemon's 60s cycle.
+fmt_devin_pool_quota() {
+  DEVIN_1D_USED_PCT=""
+  DEVIN_7D_USED_PCT=""
+  DEVIN_AVAIL_SEATS=""
+  DEVIN_TOTAL_SEATS=""
+  DEVIN_BALANCE_USD=""
+  DEVIN_PILL_OUT=""
+
+  local json="$QUOTA_CACHE_DIR/vendor-devin-pool.json"
+  local status="$QUOTA_CACHE_DIR/vendor-devin-pool.status"
+  [[ ! -f "$json" && ! -f "$status" ]] && return
+
+  local fetched_at="" u1="" r1="" u7="" r7="" avail="" total="" err_seats="" bal=""
+  if [[ -f "$json" ]]; then
+    local parsed
+    parsed=$(jq -er '
+      select(type == "object")
+      | select((.fetched_at | type) == "number")
+      | .data as $d
+      | select(($d | type) == "object")
+      | select(($d.used_1d_pct | type) == "number" and $d.used_1d_pct >= 0 and $d.used_1d_pct <= 100)
+      | select(($d.reset_1d_at | type) == "number" and $d.reset_1d_at > 0)
+      | select(($d.used_7d_pct | type) == "number" and $d.used_7d_pct >= 0 and $d.used_7d_pct <= 100)
+      | select(($d.reset_7d_at | type) == "number" and $d.reset_7d_at > 0)
+      | select(($d.avail_seats | type) == "number" and ($d.total_seats | type) == "number" and $d.total_seats > 0)
+      | [
+          (.fetched_at | floor),
+          ($d.used_1d_pct | round),
+          ($d.reset_1d_at | floor),
+          ($d.used_7d_pct | round),
+          ($d.reset_7d_at | floor),
+          ($d.avail_seats | floor),
+          ($d.total_seats | floor),
+          (($d.error_seats // 0) | floor),
+          ($d.balance_usd // "")
+        ]
+      | @tsv
+    ' "$json" 2>/dev/null) || {
+      DEVIN_PILL_OUT="${RED}Devin: invalid cache${RST}"
+      printf '%s' "$DEVIN_PILL_OUT"
+      return
+    }
+    IFS=$'\t' read -r fetched_at u1 r1 u7 r7 avail total err_seats bal <<<"$parsed"
+  fi
+
+  if [[ -f "$status" ]]; then
+    local failed_at reason
+    IFS=$'\t' read -r failed_at reason <<<"$(jq -er '
+      select((.failed_at | type) == "number" and (.reason | type) == "string" and (.reason | test("^[a-z0-9-]+$")))
+      | [(.failed_at | floor), .reason] | @tsv
+    ' "$status" 2>/dev/null)"
+    if [[ -n "${failed_at:-}" ]] && (( failed_at >= ${fetched_at:-0} )); then
+      DEVIN_PILL_OUT="${RED}Devin: ${reason}${RST}"
+      printf '%s' "$DEVIN_PILL_OUT"
+      return
+    fi
+  fi
+  [[ -z "$fetched_at" ]] && return
+
+  if (( NOW_SEC_RENDER - fetched_at > 900 )); then
+    DEVIN_PILL_OUT="${RED}Devin: stale${RST}"
+    printf '%s' "$DEVIN_PILL_OUT"
+    return
+  fi
+
+  DEVIN_1D_USED_PCT="$u1"
+  DEVIN_7D_USED_PCT="$u7"
+  DEVIN_AVAIL_SEATS="$avail"
+  DEVIN_TOTAL_SEATS="$total"
+  DEVIN_BALANCE_USD="$bal"
+
+  local c1 c7 cd1 cd7 seat_color="$GREEN" err_tag=""
+  quota_pct_color_var c1 "$u1"
+  quota_pct_color_var c7 "$u7"
+  fmt_glm_countdown_var cd1 "$(( r1 * 1000 ))"
+  fmt_glm_countdown_var cd7 "$(( r7 * 1000 ))"
+  if (( avail == 0 )); then seat_color="$RED_BOLD"
+  elif (( avail * 5 <= total )); then seat_color="$YELLOW"
+  fi
+  if (( ${err_seats:-0} > 0 )); then
+    err_tag=" ${RED}!${err_seats}${RST}"
+  fi
+  DEVIN_PILL_OUT="${BLUE}Devin: ${RST}${c1}${u1}%${RST}${BLUE} ${cd1} | ${RST}${c7}${u7}%${RST}${BLUE} ${cd7} (${RST}${seat_color}${avail}/${total}${RST}${err_tag}${BLUE})${RST}"
+  printf '%s' "$DEVIN_PILL_OUT"
+}
+
 usage_part=""
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
   usage_memo="$CACHE_DIR/usage-pill-${session_id:-none}.memo"
@@ -1187,6 +1276,8 @@ v_stat=$(stat -f '%Fm:%z' \
   "$_v_samples" \
   "$QUOTA_CACHE_DIR/vendor-grok-bot-local.json" \
   "$QUOTA_CACHE_DIR/vendor-grok-bot-local.status" \
+  "$QUOTA_CACHE_DIR/vendor-devin-pool.json" \
+  "$QUOTA_CACHE_DIR/vendor-devin-pool.status" \
   2>/dev/null | tr '\n' '|')
 : "${v_stat:=empty}"
 v_cached=0
@@ -1195,7 +1286,8 @@ if [[ -f "$vendor_memo" ]]; then
     read -r v_memo_ts v_memo_stat
     IFS=$'\037' read -r CODEX_PILL_OUT CODEX_WEEKLY_REMAINING_PCT CODEX_WEEKLY_USED_PCT CODEX_WEEKLY_RESET_AT \
       GROK_PILL_OUT GROK_WEEKLY_USED_PCT GROK_WEEKLY_RESET_AT \
-      GROK_BOT_OUT GROK_BOT_USED_PCT GROK_BOT_RESET_AT _v_end
+      GROK_BOT_OUT GROK_BOT_USED_PCT GROK_BOT_RESET_AT \
+      DEVIN_PILL_OUT DEVIN_1D_USED_PCT DEVIN_7D_USED_PCT DEVIN_AVAIL_SEATS DEVIN_TOTAL_SEATS DEVIN_BALANCE_USD _v_end
   } < "$vendor_memo" 2>/dev/null || true
   if (( NOW_SEC_RENDER - ${v_memo_ts:-0} < 5 )) && [[ "$v_memo_stat" == "$v_stat" ]]; then
     v_cached=1
@@ -1203,19 +1295,22 @@ if [[ -f "$vendor_memo" ]]; then
     CODEX_PILL_OUT="" ; CODEX_WEEKLY_REMAINING_PCT="" ; CODEX_WEEKLY_USED_PCT="" ; CODEX_WEEKLY_RESET_AT=""
     GROK_PILL_OUT="" ; GROK_WEEKLY_USED_PCT="" ; GROK_WEEKLY_RESET_AT=""
     GROK_BOT_OUT="" ; GROK_BOT_USED_PCT="" ; GROK_BOT_RESET_AT=""
+    DEVIN_PILL_OUT="" ; DEVIN_1D_USED_PCT="" ; DEVIN_7D_USED_PCT="" ; DEVIN_AVAIL_SEATS="" ; DEVIN_TOTAL_SEATS="" ; DEVIN_BALANCE_USD=""
   fi
 fi
 if (( ! v_cached )); then
   fmt_codex_quota >/dev/null 2>&1 || true
   fmt_grok_quota >/dev/null 2>&1 || true
   fmt_grok_bot_quota >/dev/null 2>&1 || true
+  fmt_devin_pool_quota >/dev/null 2>&1 || true
   if [[ -d "$CACHE_DIR" ]]; then
     memo_tmp=$(mktemp "$CACHE_DIR/.vendor-pills.XXXXXX" 2>/dev/null) &&
-      printf '%s %s\n%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037END\n' \
+      printf '%s %s\n%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037END\n' \
         "$NOW_SEC_RENDER" "$v_stat" \
         "$CODEX_PILL_OUT" "$CODEX_WEEKLY_REMAINING_PCT" "$CODEX_WEEKLY_USED_PCT" "$CODEX_WEEKLY_RESET_AT" \
         "$GROK_PILL_OUT" "$GROK_WEEKLY_USED_PCT" "$GROK_WEEKLY_RESET_AT" \
-        "$GROK_BOT_OUT" "$GROK_BOT_USED_PCT" "$GROK_BOT_RESET_AT" > "$memo_tmp" &&
+        "$GROK_BOT_OUT" "$GROK_BOT_USED_PCT" "$GROK_BOT_RESET_AT" \
+        "$DEVIN_PILL_OUT" "$DEVIN_1D_USED_PCT" "$DEVIN_7D_USED_PCT" "$DEVIN_AVAIL_SEATS" "$DEVIN_TOTAL_SEATS" "$DEVIN_BALANCE_USD" > "$memo_tmp" &&
       mv "$memo_tmp" "$vendor_memo"
   fi
 fi
@@ -1228,6 +1323,7 @@ if [[ -n "$GROK_BOT_OUT" ]]; then
   fi
 fi
 [[ -n "$grok_seg" ]] && push_seg 2 "$WT_BG_GROK" "$grok_seg"
+[[ -n "$DEVIN_PILL_OUT" ]] && push_seg 2 "$WT_BG_DEVIN" "$DEVIN_PILL_OUT"
 
 # ----- Line 3 -----
 # context-bar
@@ -1383,6 +1479,11 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg grok_weekly_reset_at "$GROK_WEEKLY_RESET_AT" \
     --arg grok_bot_used_pct "$GROK_BOT_USED_PCT" \
     --arg grok_bot_reset_at "$GROK_BOT_RESET_AT" \
+    --arg devin_1d_used_pct "$DEVIN_1D_USED_PCT" \
+    --arg devin_7d_used_pct "$DEVIN_7D_USED_PCT" \
+    --arg devin_avail_seats "$DEVIN_AVAIL_SEATS" \
+    --arg devin_total_seats "$DEVIN_TOTAL_SEATS" \
+    --arg devin_balance_usd "$DEVIN_BALANCE_USD" \
     --arg cache_hit   "${hit:-}" \
     --arg cache_idle  "${idle:-}" \
     --arg cache_compactions "${compactions:-0}" \

@@ -18,6 +18,7 @@ WIDGETS=(
   "thermals|/Users/linhancheng/.claude/scripts/cc-statusline/thermals.sh|5"
   "runaway|/Users/linhancheng/.claude/scripts/cc-statusline/runaway.sh|10"
   "grok-bot|/Users/linhancheng/.claude/scripts/cc-statusline/grok-bot-usage.mjs|300"
+  "devin-pool|/Users/linhancheng/.claude/scripts/cc-statusline/devin-pool-usage.mjs|60"
 )
 
 write_atomic() {

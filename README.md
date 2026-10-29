@@ -178,7 +178,7 @@ on screen. The whole point is "future analysis of indicators I cared about
 enough to display" — drift between screen and log destroys that signal.
 
 Schema (per JSONL line):
-`ts cwd session_id model effort cost codex_weekly_remaining_pct codex_weekly_used_pct codex_weekly_reset_at grok_weekly_used_pct grok_weekly_reset_at grok_bot_used_pct grok_bot_reset_at cache_hit cache_idle cache_compactions tps tps_decode ttft ctx_pct ctx_tokens skill subagents git_branch git_ab runaway cpu thermals free_mem disk battery line1 line2 line3`
+`ts cwd session_id model effort cost codex_weekly_remaining_pct codex_weekly_used_pct codex_weekly_reset_at grok_weekly_used_pct grok_weekly_reset_at grok_bot_used_pct grok_bot_reset_at devin_1d_used_pct devin_7d_used_pct devin_avail_seats devin_total_seats devin_balance_usd cache_hit cache_idle cache_compactions tps tps_decode ttft ctx_pct ctx_tokens skill subagents git_branch git_ab runaway cpu thermals free_mem disk battery line1 line2 line3`
 
 `tps` 是目前模型最近 5 個合格回應的整體輸出率中位數：輸出至少 200 token，
 完整耗時大於 0.5 秒且不超過 900 秒。計算包含等待時間；widget-log 在少於

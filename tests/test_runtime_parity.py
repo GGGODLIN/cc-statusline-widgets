@@ -19,6 +19,7 @@ class RuntimeParityTest(unittest.TestCase):
       REPO / "scripts/subagent-count.sh": RUNTIME / "subagent-count.sh",
       REPO / "scripts/subagent-panel.sh": RUNTIME / "subagent-panel.sh",
       REPO / "scripts/grok-bot-usage.mjs": RUNTIME / "grok-bot-usage.mjs",
+      REPO / "scripts/devin-pool-usage.mjs": RUNTIME / "devin-pool-usage.mjs",
       REPO / "scripts/usage-color.sh": Path.home() / ".claude/scripts/usage-color.sh",
     }
     for source, runtime in pairs.items():
