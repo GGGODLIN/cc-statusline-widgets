@@ -4,13 +4,14 @@
 // Cursor's DashboardService with the Cursor account it logged in with.
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 const HOME = homedir();
 const SECRETS = join(HOME, "Library/Application Support/Grok Bot/sand-secrets.json");
 const CACHE_DIR = join(HOME, ".claude/cache");
+const SAMPLES = process.env.GROK_QUOTA_SAMPLES ?? join(HOME, ".cli-proxy-api/grok-quota-samples.jsonl");
 const ENDPOINT = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsageStatus";
 
 class Failure extends Error {}
@@ -80,6 +81,13 @@ async function fetchUsage(token) {
   return { used_percent: used, reset_at: resetAt };
 }
 
+// Dormant when the Grok Build sampler is parked (samples file archived/absent): skip network polling.
+if (!existsSync(SAMPLES)) {
+  rmSync(join(CACHE_DIR, "vendor-grok-bot-local.json"), { force: true });
+  rmSync(join(CACHE_DIR, "vendor-grok-bot-local.status"), { force: true });
+  process.exit(0);
+}
+
 try {
   const data = await fetchUsage(readAccessToken());
   if (data === null) {
@@ -89,6 +97,8 @@ try {
     writeAtomic("vendor-grok-bot-local.json", { fetched_at: Math.floor(Date.now() / 1000), data });
   }
 } catch (err) {
-  const reason = err instanceof Failure ? err.message : "unexpected";
-  writeAtomic("vendor-grok-bot-local.status", { failed_at: Math.floor(Date.now() / 1000), reason });
+  if (existsSync(join(CACHE_DIR, "vendor-grok-bot-local.json"))) {
+    const reason = err instanceof Failure ? err.message : "unexpected";
+    writeAtomic("vendor-grok-bot-local.status", { failed_at: Math.floor(Date.now() / 1000), reason });
+  }
 }
