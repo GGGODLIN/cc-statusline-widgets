@@ -4,7 +4,7 @@
 // Cursor's DashboardService with the Cursor account it logged in with.
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -70,6 +70,8 @@ async function fetchUsage(token) {
   }
   if (!res.ok) throw new Failure(`http-${res.status}`);
   const body = await res.json().catch(() => null);
+  // Heavy expired -> Free plan with zero included quota; omit the cache so the pill hides instead of faking 0%.
+  if (body?.includedLimitZero === true) return null;
   const used = body?.usagePercent ?? 0;
   const resetAt = Math.floor(Date.parse(body?.nextResetTimestampUtc ?? "") / 1000);
   if (!Number.isFinite(used) || used < 0 || !Number.isFinite(resetAt) || resetAt <= 0) {
@@ -80,7 +82,12 @@ async function fetchUsage(token) {
 
 try {
   const data = await fetchUsage(readAccessToken());
-  writeAtomic("vendor-grok-bot-local.json", { fetched_at: Math.floor(Date.now() / 1000), data });
+  if (data === null) {
+    rmSync(join(CACHE_DIR, "vendor-grok-bot-local.json"), { force: true });
+    rmSync(join(CACHE_DIR, "vendor-grok-bot-local.status"), { force: true });
+  } else {
+    writeAtomic("vendor-grok-bot-local.json", { fetched_at: Math.floor(Date.now() / 1000), data });
+  }
 } catch (err) {
   const reason = err instanceof Failure ? err.message : "unexpected";
   writeAtomic("vendor-grok-bot-local.status", { failed_at: Math.floor(Date.now() / 1000), reason });
