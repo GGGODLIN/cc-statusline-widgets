@@ -3,8 +3,9 @@
 #
 # Two tiers:
 #   Tier 1 (orphan):  ppid=1 + tty=?? +
-#                     ((shell|search-cli) with %CPU>=25, OR search/stream-cli with etime>=6h) → 🚨 (red)
-#   Tier 2 (hot):     %CPU>80 + etime contains days or 20h+ + (shell|search-cli) → ⚠️ (yellow)
+#                     ((shell|search-cli) with %CPU>=25, OR search/stream-cli with etime>=6h,
+#                      OR Claude shell-snapshot wrapper shell with etime>=6h) → 🚨 (red)
+#   Tier 2 (hot):     (%CPU>80 + search-cli with etime>=3m) OR (%CPU>80 + shell with etime>=20h) → ⚠️ (yellow)
 #
 # Empty output means "all clear, hide widget" (paired with daemon always-write).
 set -uo pipefail
@@ -40,6 +41,12 @@ while IFS=$'\t' read -r kind pid cmd; do
   esac
   if [[ "$kind" == "orphan_tool" ]]; then
     orphan_count=$(( orphan_count + 1 ))
+    continue
+  fi
+  if [[ "$kind" == "orphan_cc_shell" ]]; then
+    if [[ "$full_cmd" == *"/.claude/shell-snapshots/"* ]]; then
+      orphan_count=$(( orphan_count + 1 ))
+    fi
     continue
   fi
   if [[ "$kind" == "orphan_runtime" || "$kind" == "orphan_runtime_giant" ]]; then
@@ -80,12 +87,15 @@ done < <(printf '%s\n' "$ps_out" | awk -v skip_age="${ORPHAN_SKIP_MIN_AGE:-0}" '
 
     if (skip_age != 1 && et ~ /^0?[01]:[0-9][0-9]$/) next
 
+    long_3m  = !(et ~ /^0?[012]:[0-9][0-9]$/)
     long_6h  = (et ~ /-/ || (et ~ /^[0-9]+:[0-9]+:[0-9]+$/ && substr(et, 1, index(et, ":") - 1) + 0 >= 6))
     long_20h = (et ~ /-/ || (et ~ /^[0-9]+:[0-9]+:[0-9]+$/ && substr(et, 1, index(et, ":") - 1) + 0 >= 20))
 
     if (ppid == 1 && tty == "??") {
       if (is_shell && pcpu >= 25) {
         printf "orphan_shell\t%s\t%s\n", pid, cmd
+      } else if (is_shell && long_6h) {
+        printf "orphan_cc_shell\t%s\t%s\n", pid, cmd
       } else if (is_tool && (pcpu >= 25 || long_6h)) {
         printf "orphan_tool\t%s\t%s\n", pid, cmd
       } else if (is_runtime && rss >= 4194304) {
@@ -94,7 +104,7 @@ done < <(printf '%s\n' "$ps_out" | awk -v skip_age="${ORPHAN_SKIP_MIN_AGE:-0}" '
         printf "orphan_runtime\t%s\t%s\n", pid, cmd
       }
     }
-    if ((is_shell || is_tool) && pcpu > 80 && long_20h) {
+    if ((is_tool && pcpu > 80 && long_3m) || (is_shell && pcpu > 80 && long_20h)) {
       printf "hot\t%s\t%s\n", pid, cmd
     }
   }
