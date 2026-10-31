@@ -1,5 +1,6 @@
 import json
 import os
+import socket
 import subprocess
 import unittest
 
@@ -33,6 +34,52 @@ class WrapperModelPillTests(unittest.TestCase):
     line = self.first_line_raw('WT_STYLE="pill"\nWT_BG_MODEL="196,183,220"\n')
 
     self.assertNotIn(DARK_INK, line)
+
+  def test_herdr_app_terminal_suppresses_stdout_and_writes_mod_json(self):
+    herdr_home = self.home / ".config/herdr-app"
+    herdr_home.mkdir(parents=True)
+    sock_path = herdr_home / "herdr-app.sock"
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(str(sock_path))
+    self.addCleanup(srv.close)
+    env = {
+      **os.environ,
+      "HOME": str(self.home),
+      "HERDR_APP_HOME": str(herdr_home),
+      "HERDR_APP_SOCK": str(sock_path),
+      "HC_TERMINAL_ID": "t42",
+      "CC_WIDGETS_CONF": str(self.theme),
+    }
+    env.pop("WT_NO_LOG", None)
+    env.pop("WT_FORCE_STDOUT", None)
+    result = subprocess.run(["/bin/bash", str(self.wrapper)], input=json.dumps(self.input),
+                            text=True, capture_output=True, env=env, check=True)
+    self.assertEqual(result.stdout, "")
+    term_json = herdr_home / "data/cc-status/t42.json"
+    global_json = herdr_home / "data/cc-status/_global.json"
+    self.assertTrue(term_json.is_file())
+    self.assertTrue(global_json.is_file())
+    payload = json.loads(term_json.read_text())
+    self.assertEqual(payload["terminal"], "t42")
+    self.assertEqual(len(payload["lines"]), 3)
+    self.assertIn("◆", payload["lines"][0][0]["spans"][0]["text"])
+
+  def test_outside_herdr_app_still_prints_stdout_statusline(self):
+    herdr_home = self.home / ".config/herdr-app"
+    herdr_home.mkdir(parents=True)
+    env = {
+      **os.environ,
+      "HOME": str(self.home),
+      "HERDR_APP_HOME": str(herdr_home),
+      "CC_WIDGETS_CONF": str(self.theme),
+      "WT_FORCE_COLS": "500",
+    }
+    env.pop("HC_TERMINAL_ID", None)
+    env.pop("WT_NO_LOG", None)
+    result = subprocess.run(["/bin/bash", str(self.wrapper)], input=json.dumps(self.input),
+                            text=True, capture_output=True, env=env, check=True)
+    self.assertGreaterEqual(len(result.stdout.splitlines()), 2)
+    self.assertIn("◆", result.stdout)
 
 
 if __name__ == "__main__":

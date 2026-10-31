@@ -1375,52 +1375,198 @@ line1_full="$line1"
 line2_full="$line2"
 line3_full="$line3"
 
-cols=$(probe_cols)
-effective_cols=20
-if [[ -n "$cols" && "$cols" -gt 0 ]]; then
-  effective_cols=$(( cols - 6 ))
-  (( effective_cols < 20 )) && effective_cols=20
+herdr_app_dir="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
+herdr_app_sock="${HERDR_APP_SOCK:-$herdr_app_dir/herdr-app.sock}"
+herdr_mod_active=0
+if [[ -z "${WT_NO_LOG:-}" && -z "${WT_FORCE_STDOUT:-}" && -n "${HC_TERMINAL_ID:-}" && "$HC_TERMINAL_ID" =~ ^[A-Za-z0-9_/-]+$ && -S "$herdr_app_sock" ]]; then
+  herdr_mod_active=1
 fi
 
-if [[ "$WT_LAYOUT" == "auto" ]]; then
-  # merge all segments into one stream, greedy-wrap by visible width
-  RB=( ${S1_BG[@]+"${S1_BG[@]}"} ${S2_BG[@]+"${S2_BG[@]}"} ${S3_BG[@]+"${S3_BG[@]}"} )
-  RT=( ${S1_TX[@]+"${S1_TX[@]}"} ${S2_TX[@]+"${S2_TX[@]}"} ${S3_TX[@]+"${S3_TX[@]}"} )
-  total=${#RB[@]}
-  if (( total > 0 )); then
-    SEG_W=()
-    while IFS= read -r w; do
-      SEG_W[${#SEG_W[@]}]=$w
-    done < <(for t in "${RT[@]}"; do printf '%s\0' "$t"; done | seg_widths)
-    if [[ "$WT_STYLE" == "lean" ]]; then cap_w=0; sep_w=2; pad_w=0
-    else                                 cap_w=2; sep_w=1; pad_w=2; fi
-    start=0 ; nlines=1 ; cur=$(( cap_w + SEG_W[0] + pad_w ))
-    out_rows=""
-    _row_str=""
-    for ((i=1; i<total; i++)); do
-      need=$(( cur + sep_w + SEG_W[i] + pad_w ))
-      if (( need > effective_cols && nlines < WT_MAX_LINES )); then
-        render_range_var _row_str "$start" $((i-1))
-        out_rows="${out_rows}${_row_str}"$'\n'
-        start=$i ; nlines=$((nlines+1)) ; cur=$(( cap_w + SEG_W[i] + pad_w ))
-      else
-        cur=$need
-      fi
-    done
-    render_range_var _row_str "$start" $((total-1))
-    out_rows="${out_rows}${_row_str}"
-    printf '%s\n' "$out_rows"
+if (( ! herdr_mod_active )); then
+  cols=$(probe_cols)
+  effective_cols=20
+  if [[ -n "$cols" && "$cols" -gt 0 ]]; then
+    effective_cols=$(( cols - 6 ))
+    (( effective_cols < 20 )) && effective_cols=20
   fi
-else
-  if [[ -n "$line2" ]]; then
-    fit_and_print_lines "$effective_cols" "$line1" "$line2" "$line3"
+
+  if [[ "$WT_LAYOUT" == "auto" ]]; then
+    # merge all segments into one stream, greedy-wrap by visible width
+    RB=( ${S1_BG[@]+"${S1_BG[@]}"} ${S2_BG[@]+"${S2_BG[@]}"} ${S3_BG[@]+"${S3_BG[@]}"} )
+    RT=( ${S1_TX[@]+"${S1_TX[@]}"} ${S2_TX[@]+"${S2_TX[@]}"} ${S3_TX[@]+"${S3_TX[@]}"} )
+    total=${#RB[@]}
+    if (( total > 0 )); then
+      SEG_W=()
+      while IFS= read -r w; do
+        SEG_W[${#SEG_W[@]}]=$w
+      done < <(for t in "${RT[@]}"; do printf '%s\0' "$t"; done | seg_widths)
+      if [[ "$WT_STYLE" == "lean" ]]; then cap_w=0; sep_w=2; pad_w=0
+      else                                 cap_w=2; sep_w=1; pad_w=2; fi
+      start=0 ; nlines=1 ; cur=$(( cap_w + SEG_W[0] + pad_w ))
+      out_rows=""
+      _row_str=""
+      for ((i=1; i<total; i++)); do
+        need=$(( cur + sep_w + SEG_W[i] + pad_w ))
+        if (( need > effective_cols && nlines < WT_MAX_LINES )); then
+          render_range_var _row_str "$start" $((i-1))
+          out_rows="${out_rows}${_row_str}"$'\n'
+          start=$i ; nlines=$((nlines+1)) ; cur=$(( cap_w + SEG_W[i] + pad_w ))
+        else
+          cur=$need
+        fi
+      done
+      render_range_var _row_str "$start" $((total-1))
+      out_rows="${out_rows}${_row_str}"
+      printf '%s\n' "$out_rows"
+    fi
   else
-    fit_and_print_lines "$effective_cols" "$line1" "$line3"
+    if [[ -n "$line2" ]]; then
+      fit_and_print_lines "$effective_cols" "$line1" "$line2" "$line3"
+    else
+      fit_and_print_lines "$effective_cols" "$line1" "$line3"
+    fi
   fi
 fi
 
-# preview mode: skip side effects (i18n bridge + widget-log)
+# preview mode: skip side effects (herdr mod bridge + i18n bridge + widget-log)
 [[ -n "${WT_NO_LOG:-}" ]] && exit 0
+
+# ----- Herdr.app workspace-status mod bridge -----
+if [[ -d "$herdr_app_dir" ]]; then
+  herdr_status_dir="$herdr_app_dir/data/cc-status"
+  mkdir -p "$herdr_status_dir" 2>/dev/null
+  {
+    for _ln in 1 2 3; do
+      eval "_bgs=( \${S${_ln}_BG[@]+\"\${S${_ln}_BG[@]}\"} ) ; _txs=( \${S${_ln}_TX[@]+\"\${S${_ln}_TX[@]}\"} )"
+      _cnt=${#_bgs[@]}
+      for ((_i=0; _i<_cnt; _i++)); do
+        printf '%s\0%s\0%s\0' "$_ln" "${_bgs[_i]}" "${_txs[_i]}"
+      done
+    done
+  } | perl -CSDA -MJSON::PP -e '
+    use strict;
+    use warnings;
+    my ($out_dir, $term, $sid, $cwd, $now, $default_fg_spec) = @ARGV;
+    my @ansi16 = (
+      "#000000", "#800000", "#008000", "#808000", "#000080", "#800080", "#008080", "#c0c0c0",
+      "#808080", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff", "#00ffff", "#ffffff"
+    );
+    sub xterm_hex {
+      my ($n) = @_;
+      $n = int($n // 0);
+      return "#78dce8" if $n == 30;
+      return $ansi16[$n] if $n >= 0 && $n < 16;
+      if ($n >= 16 && $n <= 231) {
+        my $idx = $n - 16;
+        my $r = int($idx / 36);
+        my $g = int(($idx % 36) / 6);
+        my $b = $idx % 6;
+        my @rgb = map { $_ ? $_ * 40 + 55 : 0 } ($r, $g, $b);
+        return sprintf("#%02x%02x%02x", @rgb);
+      }
+      if ($n >= 232 && $n <= 255) {
+        my $v = ($n - 232) * 10 + 8;
+        return sprintf("#%02x%02x%02x", $v, $v, $v);
+      }
+      return "#ffffff";
+    }
+    sub spec_to_hex {
+      my ($s, $fallback) = @_;
+      return $fallback if !defined($s) || $s eq "";
+      return sprintf("#%02x%02x%02x", $1, $2, $3) if $s =~ /^(\d+),(\d+),(\d+)$/;
+      return xterm_hex($s) if $s =~ /^\d+$/;
+      return $fallback;
+    }
+    my $default_fg = spec_to_hex($default_fg_spec, "#ffffff");
+    sub parse_spans {
+      my ($tx) = @_;
+      my $fg = $default_fg;
+      my $bold = JSON::PP::false;
+      my @spans;
+      while ($tx =~ /\G([^\e]*)(?:\e\[([0-9;]*)m)?/gc) {
+        my ($chunk, $codes) = ($1, $2);
+        if (defined($chunk) && length($chunk) > 0) {
+          if (@spans && $spans[-1]{fg} eq $fg && $spans[-1]{bold} == $bold) {
+            $spans[-1]{text} .= $chunk;
+          } else {
+            push @spans, { text => $chunk, fg => $fg, bold => $bold };
+          }
+        }
+        last unless defined($codes);
+        my @p = split /;/, ($codes eq "" ? "0" : $codes);
+        my $i = 0;
+        while ($i <= $#p) {
+          my $c = int($p[$i] // 0);
+          if ($c == 0) {
+            $fg = $default_fg;
+            $bold = JSON::PP::false;
+          } elsif ($c == 1) {
+            $bold = JSON::PP::true;
+          } elsif ($c == 22) {
+            $bold = JSON::PP::false;
+          } elsif ($c == 38 && ($p[$i+1] // 0) == 5 && defined($p[$i+2])) {
+            $fg = xterm_hex($p[$i+2]);
+            $i += 2;
+          } elsif ($c == 38 && ($p[$i+1] // 0) == 2 && defined($p[$i+4])) {
+            $fg = sprintf("#%02x%02x%02x", $p[$i+2], $p[$i+3], $p[$i+4]);
+            $i += 4;
+          }
+          $i++;
+        }
+      }
+      return \@spans;
+    }
+    local $/ = "\0";
+    my @lines = ([], [], []);
+    while (defined(my $ln = <STDIN>)) {
+      chomp $ln;
+      my $bg = <STDIN>; last unless defined $bg; chomp $bg;
+      my $tx = <STDIN>; last unless defined $tx; chomp $tx;
+      my $idx = int($ln) - 1;
+      next unless $idx >= 0 && $idx <= 2;
+      my $bg_hex = spec_to_hex($bg, "#3a3a3a");
+      my $spans = parse_spans($tx);
+      if (lc($bg_hex) eq "#d75f5f") {
+        for my $sp (@$spans) {
+          if (lc($sp->{fg}) eq "#d70000") {
+            $sp->{fg} = "#ffffff";
+            $sp->{bold} = JSON::PP::true;
+          }
+        }
+      }
+      push @{$lines[$idx]}, {
+        bg => $bg_hex,
+        spans => $spans
+      };
+    }
+    sub write_atomic {
+      my ($path, $data) = @_;
+      my $tmp = "$path.tmp.$$";
+      if (open my $fh, ">:raw", $tmp) {
+        print $fh encode_json($data);
+        close $fh;
+        rename $tmp, $path or unlink $tmp;
+      }
+    }
+    my @sys = @{$lines[2]} > 1 ? @{$lines[2]}[1 .. $#{$lines[2]}] : ();
+    write_atomic("$out_dir/_global.json", {
+      updated_at => int($now),
+      line2 => $lines[1],
+      sys => \@sys,
+    });
+    if (defined($term) && $term =~ /^[A-Za-z0-9_\/-]+$/) {
+      (my $safe = $term) =~ s/\//_/g;
+      write_atomic("$out_dir/$safe.json", {
+        terminal => $term,
+        session_id => $sid,
+        cwd => $cwd,
+        updated_at => int($now),
+        lines => \@lines,
+      });
+    }
+  ' "$herdr_status_dir" "${HC_TERMINAL_ID:-}" "$session_id" "$cwd" "$NOW_SEC_RENDER" "$VL_FG_TEXT" 2>/dev/null || true
+fi
+# ----- end Herdr.app bridge -----
 
 # ----- cc-i18n-proxy web statusline bridge (active when uuid file present) -----
 intl_uuid=""
