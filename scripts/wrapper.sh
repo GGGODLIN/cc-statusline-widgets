@@ -412,6 +412,117 @@ else
   ctx_used_pct=0 ; ctx_size=0 ; ctx_used_tokens=0
 fi
 model_name="${model_name% (*)}"
+case "$model_name" in
+  claude-opus-5-5*|opus|opus\[1m\]) model_name="Opus 5.5" ;;
+  claude-fable-5-1*|fable|fable\[1m\]) model_name="Fable 5.1" ;;
+  claude-fable-5*) model_name="Fable 5" ;;
+  claude-sonnet-5-5*|sonnet|sonnet\[1m\]) model_name="Sonnet 5.5" ;;
+  claude-haiku-5-5*|haiku) model_name="Haiku 5.5" ;;
+esac
+
+if [[ ( -z "$transcript_path" || ! -f "$transcript_path" ) && -n "$session_id" ]]; then
+  shopt -s nullglob
+  _tp_cand=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"/*/"${session_id}.jsonl" "$HOME/.claude"*/projects/*/"${session_id}.jsonl")
+  shopt -u nullglob
+  (( ${#_tp_cand[@]} > 0 )) && transcript_path="${_tp_cand[0]}"
+fi
+
+# Read active session effort from transcript so /effort changes override static settings.json.
+t_stat="" ; t_mtime=0 ; t_size=0
+_tp_eff=""
+if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
+  t_stat=$(stat -f '%m %z' "$transcript_path" 2>/dev/null)
+  read -r t_mtime t_size <<<"${t_stat:-0 0}"
+  tp_info_memo="$CACHE_DIR/tp-info-${transcript_path##*/}.memo"
+  _tp_info=""
+  if [[ -n "$t_stat" && -f "$tp_info_memo" ]]; then
+    { read -r _tp_m_stat; read -r _tp_m_data; } < "$tp_info_memo" 2>/dev/null || true
+    [[ "$_tp_m_stat" == "$t_stat" ]] && _tp_info="$_tp_m_data"
+  fi
+  if [[ -z "$_tp_info" ]]; then
+    _tp_info=$(
+      if (( t_size > 4194304 )); then
+        tail -c 4194304 "$transcript_path" 2>/dev/null | tail -n +2 | tail -n 200
+      else
+        tail -n 200 "$transcript_path" 2>/dev/null
+      fi | jq -Rnr '
+        def cmd_eff:
+          if test("<local-command-stdout>Set effort level to ultracode") then "xhigh"
+          elif test("<local-command-stdout>Set effort level to (low|medium|high|xhigh|max)\\b") then
+            (capture("<local-command-stdout>Set effort level to (?<lvl>low|medium|high|xhigh|max)\\b") | .lvl)
+          elif test("<local-command-stdout>Set model to [^<]* with `(low|medium|high|xhigh|max)` effort") then
+            (capture("<local-command-stdout>Set model to [^<]* with `(?<lvl>low|medium|high|xhigh|max)` effort") | .lvl)
+          elif test("<local-command-stdout>[^\n<]*Effort stays (low|medium|high|xhigh|max)\\b") then
+            (capture("<local-command-stdout>[^\n<]*Effort stays (?<lvl>low|medium|high|xhigh|max)\\b") | .lvl)
+          else empty end;
+        def model_tag_eff:
+          if test(":(low|medium|high|xhigh|max)$") then
+            (capture(":(?<lvl>low|medium|high|xhigh|max)$") | .lvl)
+          elif test("\\((low|medium|high|xhigh|max)\\)$") then
+            (capture("\\((?<lvl>low|medium|high|xhigh|max)\\)$") | .lvl)
+          else null end;
+        [inputs | fromjson?] as $rows
+        | ([$rows[] | select(.type == "assistant" and .message.usage and (.message.model // "<synthetic>") != "<synthetic>")] | last) as $m
+        | ([
+            $rows[] |
+            if .type == "assistant" and .message.usage and (.message.model // "<synthetic>") != "<synthetic>" then
+              ((.requestedModel // .message.model // "") | model_tag_eff) as $tag
+              | (.perTurnEffort // $tag // .effort // empty)
+            elif .type == "user" and (.message.content | type) == "string" and (.message.content | contains("<local-command-stdout>")) then
+              (.message.content | cmd_eff)
+            else empty end
+          ] | last // "") as $eff
+        | if $m == null then
+            [ "", "", $eff, 0, 0, 0, "END" ]
+          else
+            ($m.requestedModel // $m.message.model // "?") as $mid
+            | ($mid
+                | if startswith("claude-opus-5-5") or . == "opus[1m]" or . == "opus" then "Opus 5.5"
+                  elif startswith("claude-fable-5-1") or . == "fable[1m]" or . == "fable" then "Fable 5.1"
+                  elif startswith("claude-fable-5") then "Fable 5"
+                  elif startswith("claude-sonnet-5-5") or . == "sonnet[1m]" or . == "sonnet" then "Sonnet 5.5"
+                  elif startswith("claude-haiku-5-5") or . == "haiku" then "Haiku 5.5"
+                  else . end) as $mname
+            | (($m.message.usage.input_tokens // 0) + ($m.message.usage.cache_creation_input_tokens // 0) + ($m.message.usage.cache_read_input_tokens // 0)) as $used
+            | (if ($mid | test("gemini")) then 1048576 else 1000000 end) as $win
+            | [ $mname, $mid, $eff, ($used * 100 / $win | floor), $win, $used, "END" ]
+          end
+        | map(tostring) | join("\u001f")
+      ' 2>/dev/null
+    )
+    if [[ -n "$t_stat" && -n "$_tp_info" && -d "$CACHE_DIR" ]]; then
+      memo_tmp=$(mktemp "$CACHE_DIR/.tp-info.XXXXXX" 2>/dev/null) &&
+        printf '%s\n%s\n' "$t_stat" "$_tp_info" > "$memo_tmp" &&
+        mv "$memo_tmp" "$tp_info_memo"
+    fi
+  fi
+  if [[ -n "$_tp_info" ]]; then
+    IFS=$'\037' read -r _tp_mname _tp_mid _tp_eff _tp_pct _tp_win _tp_used _tp_end <<<"$_tp_info"
+    if [[ "$model_name" == "?" && -n "$_tp_mname" ]]; then
+      model_name="$_tp_mname"
+      model_id="$_tp_mid"
+      ctx_used_pct="$_tp_pct"
+      ctx_size="$_tp_win"
+      ctx_used_tokens="$_tp_used"
+    fi
+    [[ -n "$_tp_eff" ]] && effort_level="$_tp_eff"
+  fi
+fi
+if [[ -z "${_tp_eff:-}" ]]; then
+  if [[ "${model_id:-$model_name}" =~ :(low|medium|high|xhigh|max)$ ]]; then
+    effort_level="${BASH_REMATCH[1]}"
+  elif [[ "${model_id:-$model_name}" =~ \((low|medium|high|xhigh|max)\)$ ]]; then
+    effort_level="${BASH_REMATCH[1]}"
+  fi
+fi
+
+if [[ "${session_cost_usd:-0}" == "0" && -n "${HC_TERMINAL_ID:-}" && -n "$session_id" ]]; then
+  _prev_term_json="${HERDR_APP_HOME:-$HOME/.config/herdr-app}/data/cc-status/${HC_TERMINAL_ID//\//_}.json"
+  if [[ -f "$_prev_term_json" ]]; then
+    _prev_cost=$(jq -r --arg sid "$session_id" 'select(.session_id == $sid) | .lines[0][]?.spans[]?.text | select(startswith("$")) | ltrimstr("$")' "$_prev_term_json" 2>/dev/null | head -n 1)
+    [[ "$_prev_cost" =~ ^[0-9.]+$ ]] && session_cost_usd="$_prev_cost"
+  fi
+fi
 
 # cache health: last-turn hit% + idle minutes + compact count
 cache_hit_fmt=""
@@ -419,8 +530,6 @@ hit=""
 idle_ts=""
 compactions=0
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-  t_stat=$(stat -f '%m %z' "$transcript_path" 2>/dev/null)
-  read -r t_mtime t_size <<<"${t_stat:-0 0}"
   cache_memo="$CACHE_DIR/cache2-widget-${transcript_path##*/}.memo"
   cache_data=""
   memo_mtime=0 ; memo_size=0 ; memo_calc_ts=0 ; memo_data=""
@@ -682,9 +791,55 @@ if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null; then
 fi
 
 skill_name=""
+skills_json="[]"
 if [[ -n "$session_id" ]]; then
   skill_name=$(cat "$CACHE_DIR/skill-${session_id}.txt" 2>/dev/null)
   [[ -n "$model_id" && "$model_id" != "?" && "$model_id" != "<synthetic>" ]] && printf '%s' "$model_id" > "$CACHE_DIR/model-${session_id}.txt" 2>/dev/null
+  skills_memo="$CACHE_DIR/skills-widget-${session_id}.memo"
+  tp_skills="[]"
+  skills_cached=0
+  if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
+    if [[ -n "${t_stat:-}" && -f "$skills_memo" ]]; then
+      { read -r sk_m_mtime sk_m_size; read -r sk_m_json; } < "$skills_memo" 2>/dev/null || true
+      if [[ "$sk_m_mtime $sk_m_size" == "$t_stat" && -n "$sk_m_json" ]]; then
+        tp_skills="$sk_m_json"
+        skills_cached=1
+      fi
+    fi
+    if (( ! skills_cached )); then
+      tp_skills=$(jq -Rcnr '
+        def is_builtin: test("^(clear|compact|reload-plugins|help|exit|quit|model|effort|fast|config|status|permissions|hooks|mcp|plugin|login|logout|doctor|memory|cost|resume|rename|color|vim|theme)$");
+        [inputs | fromjson? | select(.timestamp) |
+          (.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0) as $ts |
+          (.uuid // .timestamp) as $ev_id |
+          if .type == "assistant" and (.message.content | type) == "array" then
+            (.message.content[] | select(.type == "tool_use" and .name == "Skill" and (.input.skill | type) == "string") | {key: (.id // $ev_id), name: .input.skill, ts: $ts})
+          elif .type == "user" and (.message.content | type) == "string" then
+            (.message.content | capture("<command-name>/(?<cmd>[a-zA-Z0-9_:-]+)</command-name>")? | select(.cmd != null) | {key: $ev_id, name: .cmd, ts: $ts})
+          else empty end
+          | select((.name | is_builtin) | not)
+        ] | unique_by(.key)' "$transcript_path" 2>/dev/null || echo "[]")
+      if [[ -n "${t_stat:-}" && -d "$CACHE_DIR" ]]; then
+        memo_tmp=$(mktemp "$CACHE_DIR/.skills-widget.XXXXXX" 2>/dev/null) &&
+          printf '%s\n%s\n' "$t_stat" "$tp_skills" > "$memo_tmp" &&
+          mv "$memo_tmp" "$skills_memo"
+      fi
+    fi
+  fi
+  skills_json=$(jq -nc \
+    --argjson tp "${tp_skills:-[]}" \
+    --arg cur "${skill_name:-}" '
+    def is_builtin: test("^(clear|compact|reload-plugins|help|exit|quit|model|effort|fast|config|status|permissions|hooks|mcp|plugin|login|logout|doctor|memory|cost|resume|rename|color|vim|theme)$");
+    ($tp + (if ($cur | length) > 0 and (($cur | is_builtin) | not) then [{key: "cur", name: $cur, ts: 0}] else [] end))
+    | map(select((.name // "") != "" and ((.name | is_builtin) | not)))
+    | group_by(.name)
+    | map({
+        name: .[0].name,
+        ts: (map(.ts // 0) | max),
+        count: ([.[] | select(.key != "cur") | .key] | unique | length | if . == 0 then 1 else . end)
+      })
+    | sort_by(-.ts)
+  ' 2>/dev/null || echo "[]")
 fi
 if [[ -n "$skill_name" ]]; then
   skills_fmt="🪄 $skill_name"
@@ -722,7 +877,7 @@ fi
 
 [[ -n "$runaway" ]] && push_seg 1 "$WT_BG_RUNAWAY" "$runaway"
 model_pill_text="◆ ${model_name}"
-[[ -n "$effort_level" ]] && model_pill_text="${model_pill_text} (${effort_level})"
+[[ -n "$effort_level" && "$model_name" != *"(${effort_level})" ]] && model_pill_text="${model_pill_text} (${effort_level})"
 [[ -n "$tps_fmt" ]] && model_pill_text="${model_pill_text} ${tps_fmt}"
 # WT_FG_MODEL: ink for this pill alone, for a light WT_BG_MODEL under a theme whose text is light.
 _fg_model=""
@@ -1435,6 +1590,17 @@ fi
 if [[ -d "$herdr_app_dir" ]]; then
   herdr_status_dir="$herdr_app_dir/data/cc-status"
   mkdir -p "$herdr_status_dir" 2>/dev/null
+  claude_sub=1
+  if [[ -n "${CC_VENDOR:-}" || -n "${ANTHROPIC_API_KEY:-}" || -n "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+    claude_sub=0
+  elif [[ -n "${ANTHROPIC_BASE_URL:-}" && "$ANTHROPIC_BASE_URL" != "https://api.anthropic.com"* && "$ANTHROPIC_BASE_URL" != "http://localhost:8080"* && "$ANTHROPIC_BASE_URL" != "http://127.0.0.1:8318"* ]]; then
+    claude_sub=0
+  else
+    case "${model_id:-$model_name}" in
+      claude-*|Opus*|Fable*|Sonnet*|Haiku*|opus*|fable*|sonnet*|haiku*) ;;
+      *) claude_sub=0 ;;
+    esac
+  fi
   {
     for _ln in 1 2 3; do
       eval "_bgs=( \${S${_ln}_BG[@]+\"\${S${_ln}_BG[@]}\"} ) ; _txs=( \${S${_ln}_TX[@]+\"\${S${_ln}_TX[@]}\"} )"
@@ -1443,10 +1609,69 @@ if [[ -d "$herdr_app_dir" ]]; then
         printf '%s\0%s\0%s\0' "$_ln" "${_bgs[_i]}" "${_txs[_i]}"
       done
     done
-  } | perl -CSDA -MJSON::PP -e '
+  } | perl -CSDA -MJSON::PP -MTime::Local=timegm -e '
     use strict;
     use warnings;
-    my ($out_dir, $term, $sid, $cwd, $now, $default_fg_spec) = @ARGV;
+    my ($out_dir, $term, $sid, $cwd, $now, $default_fg_spec, $claude_sub_flag, $cache_idle_ts, $skills_json, $tp_path, $global_only) = @ARGV;
+    sub parse_iso {
+      my ($s) = @_;
+      return 0 unless defined($s) && $s =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/;
+      return eval { timegm($6, $5, $4, $3, $2 - 1, $1) } // 0;
+    }
+    sub collect_subagents {
+      my ($tp) = @_;
+      return [] unless defined($tp) && $tp ne "";
+      (my $sub_dir = $tp) =~ s/\.jsonl$//;
+      $sub_dir .= "/subagents";
+      return [] unless -d $sub_dir;
+      opendir(my $dh, $sub_dir) or return [];
+      my @metas = grep { /\.meta\.json$/ } readdir($dh);
+      closedir($dh);
+      my @out;
+      for my $mf (@metas) {
+        my $mp = "$sub_dir/$mf";
+        open(my $fh, "<:raw", $mp) or next;
+        local $/;
+        my $raw = <$fh>;
+        close($fh);
+        my $m = eval { decode_json($raw) };
+        next unless ref($m) eq "HASH";
+        next if ($m->{spawnDepth} // 1) >= 2;
+        (my $base = $mf) =~ s/\.meta\.json$//;
+        my $jp = "$sub_dir/$base.jsonl";
+        my @st = stat($jp);
+        @st = stat($mp) unless @st;
+        my $mtime = $st[9] // 0;
+        my $start_ts = $mtime;
+        my $model = "";
+        if (-f $jp && open(my $jfh, "<:raw", $jp)) {
+          my $first = <$jfh>;
+          if (defined($first) && $first =~ /"timestamp"\s*:\s*"([^"]+)"/) {
+            my $t0 = parse_iso($1);
+            $start_ts = $t0 if $t0 > 0;
+          }
+          my $sz = -s $jp;
+          seek($jfh, $sz > 32768 ? $sz - 32768 : 0, 0) if $sz > 32768;
+          while (my $line = <$jfh>) {
+            if ($line =~ /"requestedModel"\s*:\s*"([^"]+)"/) { $model = $1; }
+            elsif ($line =~ /"model"\s*:\s*"([^"<][^"]*)"/) { $model = $1; }
+          }
+          close($jfh);
+        }
+        push @out, {
+          id => $base,
+          agentType => ($m->{agentType} // "subagent"),
+          description => ($m->{description} // $base),
+          model => $model,
+          finished => ($m->{finished} ? JSON::PP::true : JSON::PP::false),
+          ts => int($mtime),
+          startTs => int($start_ts),
+          durationSec => ($mtime >= $start_ts ? int($mtime - $start_ts) : 0),
+        };
+      }
+      @out = sort { $b->{ts} <=> $a->{ts} } @out;
+      return \@out;
+    }
     my @ansi16 = (
       "#000000", "#800000", "#008000", "#808000", "#000080", "#800080", "#008080", "#c0c0c0",
       "#808080", "#ff0000", "#00ff00", "#ffff00", "#0000ff", "#ff00ff", "#00ffff", "#ffffff"
@@ -1549,24 +1774,39 @@ if [[ -d "$herdr_app_dir" ]]; then
       }
     }
     my @sys = @{$lines[2]} > 1 ? @{$lines[2]}[1 .. $#{$lines[2]}] : ();
-    write_atomic("$out_dir/_global.json", {
-      updated_at => int($now),
-      line2 => $lines[1],
-      sys => \@sys,
-    });
-    if (defined($term) && $term =~ /^[A-Za-z0-9_\/-]+$/) {
+    if ((!defined($global_only) || $global_only ne "1") && defined($term) && $term =~ /^[A-Za-z0-9_\/-]+$/) {
       (my $safe = $term) =~ s/\//_/g;
+      my $skills_arr = [];
+      if (defined($skills_json) && $skills_json ne "") {
+        eval { $skills_arr = decode_json($skills_json); };
+        $skills_arr = [] unless ref($skills_arr) eq "ARRAY";
+      }
+      my $subagents_arr = collect_subagents($tp_path);
       write_atomic("$out_dir/$safe.json", {
         terminal => $term,
         session_id => $sid,
         cwd => $cwd,
         updated_at => int($now),
+        cache_idle_ts => ($cache_idle_ts && $cache_idle_ts =~ /^\d+$/ ? int($cache_idle_ts) : 0),
+        claude_sub => ($claude_sub_flag ? JSON::PP::true : JSON::PP::false),
+        skills => $skills_arr,
+        subagents => $subagents_arr,
         lines => \@lines,
       });
+    } elsif (defined($global_only) && $global_only eq "1" && (!defined($term) || $term eq "")) {
+      write_atomic("$out_dir/_global.json", {
+        updated_at => int($now),
+        line2 => $lines[1],
+        sys => \@sys,
+      });
     }
-  ' "$herdr_status_dir" "${HC_TERMINAL_ID:-}" "$session_id" "$cwd" "$NOW_SEC_RENDER" "$VL_FG_TEXT" 2>/dev/null || true
+  ' "$herdr_status_dir" "${HC_TERMINAL_ID:-}" "$session_id" "$cwd" "$NOW_SEC_RENDER" "$VL_FG_TEXT" "$claude_sub" "${idle_ts:-0}" "${skills_json:-[]}" "${transcript_path:-}" "${HERDR_GLOBAL_ONLY:-0}" 2>/dev/null || true
 fi
 # ----- end Herdr.app bridge -----
+
+if [[ "${HERDR_GLOBAL_ONLY:-0}" == "1" ]]; then
+  exit 0
+fi
 
 # ----- cc-i18n-proxy web statusline bridge (active when uuid file present) -----
 intl_uuid=""

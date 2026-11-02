@@ -56,13 +56,38 @@ class WrapperModelPillTests(unittest.TestCase):
                             text=True, capture_output=True, env=env, check=True)
     self.assertEqual(result.stdout, "")
     term_json = herdr_home / "data/cc-status/t42.json"
-    global_json = herdr_home / "data/cc-status/_global.json"
     self.assertTrue(term_json.is_file())
-    self.assertTrue(global_json.is_file())
     payload = json.loads(term_json.read_text())
     self.assertEqual(payload["terminal"], "t42")
     self.assertEqual(len(payload["lines"]), 3)
     self.assertIn("◆", payload["lines"][0][0]["spans"][0]["text"])
+
+  def test_transcript_effort_overrides_stale_stdin_effort(self):
+    tp = self.root / "session.jsonl"
+    tp.write_text(
+      json.dumps({
+        "type": "assistant",
+        "timestamp": "2026-11-02T12:00:00Z",
+        "requestedModel": "claude-opus-5-5",
+        "effort": "xhigh",
+        "perTurnEffort": "xhigh",
+        "message": {"model": "claude-opus-5-5", "usage": {"input_tokens": 100}},
+      }) + "\n" +
+      json.dumps({
+        "type": "user",
+        "timestamp": "2026-11-02T12:01:00Z",
+        "message": {
+          "role": "user",
+          "content": "<local-command-stdout>Set effort level to medium (this session only): Balanced</local-command-stdout>",
+        },
+      }) + "\n"
+    )
+    self.input["model"] = {"display_name": "Opus 5.5", "id": "claude-opus-5-5"}
+    self.input["effort"] = {"level": "xhigh"}
+    self.input["transcript_path"] = str(tp)
+    line = self.first_line_raw('WT_STYLE="lean"\n')
+    self.assertIn("Opus 5.5 (medium)", line)
+    self.assertNotIn("(xhigh)", line)
 
   def test_outside_herdr_app_still_prints_stdout_statusline(self):
     herdr_home = self.home / ".config/herdr-app"
