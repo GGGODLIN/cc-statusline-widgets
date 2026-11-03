@@ -62,6 +62,31 @@ class WrapperModelPillTests(unittest.TestCase):
     self.assertEqual(len(payload["lines"]), 3)
     self.assertIn("◆", payload["lines"][0][0]["spans"][0]["text"])
 
+  def test_remote_hc_terminal_without_herdr_app_gui_still_writes_mod_json(self):
+    hc_sock = self.home / "hc.sock"
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    self.addCleanup(srv.close)
+    srv.bind(str(hc_sock))
+    env = {
+      **os.environ,
+      "HOME": str(self.home),
+      "HC_TERMINAL_ID": "t11",
+      "HC_TERMINAL_SOCKET": str(hc_sock),
+      "CC_WIDGETS_CONF": str(self.theme),
+    }
+    env.pop("HERDR_APP_HOME", None)
+    env.pop("HERDR_APP_SOCK", None)
+    env.pop("WT_NO_LOG", None)
+    env.pop("WT_FORCE_STDOUT", None)
+    result = subprocess.run(["/bin/bash", str(self.wrapper)], input=json.dumps(self.input),
+                            text=True, capture_output=True, env=env, check=True)
+    self.assertEqual(result.stdout, "")
+    term_json = self.home / ".config/herdr-app/data/cc-status/t11.json"
+    self.assertTrue(term_json.is_file())
+    self.assertTrue((self.home / ".config/herdr-app/data/cc-controls").is_dir())
+    payload = json.loads(term_json.read_text())
+    self.assertEqual(payload["terminal"], "t11")
+
   def test_transcript_effort_overrides_stale_stdin_effort(self):
     tp = self.root / "session.jsonl"
     tp.write_text(

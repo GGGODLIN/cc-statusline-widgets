@@ -1532,8 +1532,12 @@ line3_full="$line3"
 
 herdr_app_dir="${HERDR_APP_HOME:-$HOME/.config/herdr-app}"
 herdr_app_sock="${HERDR_APP_SOCK:-$herdr_app_dir/herdr-app.sock}"
+herdr_hc_local=0
+if [[ -n "${HC_TERMINAL_ID:-}" && "$HC_TERMINAL_ID" =~ ^[A-Za-z0-9_/-]+$ && -n "${HC_TERMINAL_SOCKET:-}" && "$HC_TERMINAL_SOCKET" == "$HOME/"* && -S "$HC_TERMINAL_SOCKET" ]]; then
+  herdr_hc_local=1
+fi
 herdr_mod_active=0
-if [[ -z "${WT_NO_LOG:-}" && -z "${WT_FORCE_STDOUT:-}" && -n "${HC_TERMINAL_ID:-}" && "$HC_TERMINAL_ID" =~ ^[A-Za-z0-9_/-]+$ && -S "$herdr_app_sock" ]]; then
+if [[ -z "${WT_NO_LOG:-}" && -z "${WT_FORCE_STDOUT:-}" && -n "${HC_TERMINAL_ID:-}" && "$HC_TERMINAL_ID" =~ ^[A-Za-z0-9_/-]+$ && ( -S "$herdr_app_sock" || "$herdr_hc_local" == "1" ) ]]; then
   herdr_mod_active=1
 fi
 
@@ -1587,9 +1591,9 @@ fi
 [[ -n "${WT_NO_LOG:-}" ]] && exit 0
 
 # ----- Herdr.app workspace-status mod bridge -----
-if [[ -d "$herdr_app_dir" ]]; then
+if [[ -d "$herdr_app_dir" || "$herdr_hc_local" == "1" ]]; then
   herdr_status_dir="$herdr_app_dir/data/cc-status"
-  mkdir -p "$herdr_status_dir" 2>/dev/null
+  mkdir -p "$herdr_status_dir" "$herdr_app_dir/data/cc-controls" 2>/dev/null
   claude_sub=1
   if [[ -n "${CC_VENDOR:-}" || -n "${ANTHROPIC_API_KEY:-}" || -n "${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
     claude_sub=0
