@@ -19,23 +19,11 @@ function writeAtomic(name, payload) {
   renameSync(tmp, path);
 }
 
-async function fetchPoolHealth() {
-  let res;
-  try {
-    res = await fetch(ENDPOINT, {
-      headers: { Host: "127.0.0.1:18417" },
-      signal: AbortSignal.timeout(5000),
-    });
-  } catch {
-    throw new Failure("network-error");
-  }
-  if (!res.ok) throw new Failure(`http-${res.status}`);
-  const body = await res.json().catch(() => null);
-  const rows = Array.isArray(body?.data)
-    ? body.data.filter((r) => String(r?.provider ?? "").startsWith("devin"))
-    : [];
-  if (rows.length === 0) throw new Failure("no-seats");
+// The headline numbers are the user's own pool only; devin-friend is a friend's pool and
+// would inflate "room" if mixed in. Every Devin pool is still listed in `pools` for the hover detail.
+const OWN_PROVIDER = "devin-plugin";
 
+function aggregate(rows) {
   let sum1d = 0;
   let cnt1d = 0;
   let reset1d = 0;
@@ -76,9 +64,7 @@ async function fetchPoolHealth() {
     }
   }
 
-  if (cnt1d === 0 || reset1d <= 0 || cnt7d === 0 || reset7d <= 0) {
-    throw new Failure("invalid-response");
-  }
+  if (cnt1d === 0 || reset1d <= 0 || cnt7d === 0 || reset7d <= 0) return null;
 
   return {
     used_1d_pct: Math.round(sum1d / cnt1d),
@@ -92,7 +78,38 @@ async function fetchPoolHealth() {
   };
 }
 
-try {
+export function summarize(data) {
+  const rows = Array.isArray(data) ? data.filter((r) => String(r?.provider ?? "").startsWith("devin")) : [];
+  const own = rows.filter((r) => r?.provider === OWN_PROVIDER);
+  if (own.length === 0) throw new Failure("no-seats");
+  const head = aggregate(own);
+  if (!head) throw new Failure("invalid-response");
+  const ids = [...new Set(rows.map((r) => r.provider))].sort((a, b) =>
+    a === OWN_PROVIDER ? -1 : b === OWN_PROVIDER ? 1 : a.localeCompare(b)
+  );
+  const pools = ids
+    .map((provider) => ({ provider, stats: aggregate(rows.filter((r) => r.provider === provider)) }))
+    .filter((p) => p.stats)
+    .map(({ provider, stats }) => ({ provider, ...stats }));
+  return { ...head, pools };
+}
+
+async function fetchPoolHealth() {
+  let res;
+  try {
+    res = await fetch(ENDPOINT, {
+      headers: { Host: "127.0.0.1:18417" },
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch {
+    throw new Failure("network-error");
+  }
+  if (!res.ok) throw new Failure(`http-${res.status}`);
+  const body = await res.json().catch(() => null);
+  return summarize(body?.data);
+}
+
+if (import.meta.url === `file://${process.argv[1]}`) try {
   const data = await fetchPoolHealth();
   writeAtomic("vendor-devin-pool.json", { fetched_at: Math.floor(Date.now() / 1000), data });
   try {
