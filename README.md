@@ -34,6 +34,8 @@ bash scripts/install.sh
 /Users/<USERNAME>/.claude/scripts/cc-statusline/wrapper.sh
 ```
 
+> **Herdr App 現行接法註記**：在 Herdr App 環境下，`~/.claude/settings.json` 的 `statusLine` 設為 `null`（關閉 CC 原生繪製以免雙重輸出），改由 `cc-statusline` 外掛直接呼叫 `~/.claude/scripts/cc-statusline/wrapper.sh`。
+
 ## 架構
 
 ```
