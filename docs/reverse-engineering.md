@@ -5,7 +5,7 @@
 
 ## TL;DR
 
-**CC 給 statusLine.command 的 stdin JSON 已含算好的 cost / context / rate_limits**。ccstatusline 大部分時間只是 jq-style 取值。**transcript parse 只是 fallback**。
+**CC 給 statusLine.command 的 stdin JSON 已含算好的 cost / context**（schema 雖列有 `rate_limits`，但本專案 `wrapper.sh` 未讀 `rate_limits`，額度與重置時間改由 `usage-color.sh` 讀取 OAuth 用量快取）。ccstatusline 大部分時間只是 jq-style 取值。**transcript parse 只是 fallback**。
 
 工程量比預期小 ~3x。bash + jq 130-170 行可 cover 主路徑。
 
@@ -43,7 +43,7 @@
   vim?: { mode?: string },
   worktree?: { name?, path?, branch?, original_cwd?, original_branch? },
   rate_limits?: {
-    five_hour?: { used_percentage?, resets_at? },   // quota 從這拿（不用打 oauth API）
+    five_hour?: { used_percentage?, resets_at? },   // wrapper.sh 未讀此欄；額度改由 usage-color.sh 讀 OAuth 用量快取
     seven_day?: { used_percentage?, resets_at? }
   }
 }
@@ -60,7 +60,7 @@
 | **`session-cost`** | `data.cost.total_cost_usd` | 🟢 **jq 1 行 — CC 已算好** |
 | **`context-bar`** | `data.context_window.used_percentage` + `current_usage` | 🟢 **jq 取值 + 進度條** |
 | **`tokens-total`** | `data.context_window.current_usage` 累加 input+output+cache_creation+cache_read | 🟢 jq 加總 |
-| `rate_limits` (5h/weekly) | `data.rate_limits.five_hour.used_percentage` 跟 `seven_day` | 🟢 jq 取值 + 倒數 format |
+| `rate_limits` (5h/weekly) | `wrapper.sh` 未讀 stdin `rate_limits`；由 `usage-color.sh` 讀取 `~/.claude/cache/quota-*.json` OAuth 用量快取（`five_hour` / `seven_day` 的 `utilization`、`resets_at` 及 `weekly_scoped`） | 🟢 jq 取值 + `fmt_reset` 時間格式化 |
 | `skills` | hook state（`--hook` 模式更新） | 🟡 看 src/utils/skills.ts，需要 reverse |
 
 ## Token 累加（fallback only）
