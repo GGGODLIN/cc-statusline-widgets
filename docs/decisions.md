@@ -47,7 +47,7 @@ User 動機從「battery 立刻看到」轉成「**未來擴展性 + 自製基�
 
 ### Context
 
-Phase 1 逆向 ccstatusline 發現：CC stdin 已給 `cost.total_cost_usd` / `context_window.used_percentage` / `rate_limits` 等算好的數值。**transcript parse 是 fallback 不是必要**，pricing tier 計算 **完全不需要**（CC 自己算）。
+Phase 1 逆向 ccstatusline 發現：CC stdin 已給 `cost.total_cost_usd` / `context_window.used_percentage` / `rate_limits` 等算好的數值（註：後續演進中 `wrapper.sh` 未直接消費 stdin `rate_limits`，實際配額改由 `usage-color.sh` 讀取 OAuth 快取與 per-session 帳號對應，詳見 [reverse-engineering.md](/docs/reverse-engineering.md)）。**transcript parse 是 fallback 不是必要**，pricing tier 計算 **完全不需要**（CC 自己算）。
 
 工程量從之前估「200-300 行 + transcript parser + pricing tier」**降到 130-170 行 jq + bash**。
 
