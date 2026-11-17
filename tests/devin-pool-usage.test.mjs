@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseAccountCaps, summarize } from "../scripts/devin-pool-usage.mjs";
+import { parseAccountCaps, parseOffSeats, summarize } from "../scripts/devin-pool-usage.mjs";
 
 const seat = (provider, used1d, used7d, user = "seat@example.com · ORG") => ({
   provider,
@@ -78,4 +78,21 @@ test("partial poll errors keep total_seats denominator as conservative lower bou
 
 test("no own seats is a failure even when a friend pool exists", () => {
   assert.throws(() => summarize([seat("devin-friend", 0, 0)]), /no-seats/);
+});
+
+test("parseOffSeats excludes logins where neither on nor active is true", () => {
+  const off = parseOffSeats([
+    { agent: "plugin:devin", user: "enabled@example.com · ORG", on: true },
+    { agent: "plugin:devin", user: "disabled@example.com · ORG" },
+  ]);
+  const out = summarize(
+    [
+      seat("devin-plugin", 10, 20, "enabled@example.com · ORG"),
+      seat("devin-plugin", 0, 0, "disabled@example.com · ORG"),
+    ],
+    {},
+    off
+  );
+  assert.equal(out.total_seats, 1);
+  assert.equal(out.avail_seats, 1);
 });

@@ -10,6 +10,8 @@ const CACHE_DIR = join(homedir(), ".claude/cache");
 const ENDPOINT = process.env.MAGPIE_QUOTAS_URL ?? "http://127.0.0.1:18417/v1/magpie/quotas";
 const PROVIDERS_PATH =
   process.env.MAGPIE_PROVIDERS_PATH ?? join(homedir(), ".magpie-machine/home/.config/magpie/providers.json");
+const LOGINS_PATH =
+  process.env.MAGPIE_LOGINS_PATH ?? join(homedir(), ".magpie-machine/home/.config/magpie/logins.json");
 
 class Failure extends Error {}
 
@@ -24,9 +26,33 @@ function writeAtomic(name, payload) {
 // The headline numbers are the user's own pool only; devin-friend is a friend's pool and
 // would inflate "room" if mixed in. Every Devin pool is still listed in `pools` for the hover detail.
 const OWN_PROVIDER = "devin-plugin";
-// Devin Teams weekly allowance is 2x daily; the single non-Teams seat in the 61-seat pool
-// introduces at most ~0.82 percentage points of pool-level approximation error.
+// Devin Teams weekly allowance is 2x daily; a non-Teams seat left in the pool would add
+// under one percentage point of pool-level approximation error.
 const WEEK_TO_DAY_RATIO = 2;
+
+// Magpie keeps a plugin's logins under "plugin:<plugin id>", and devin-plugin's plugin id is "devin".
+const LOGIN_AGENT = { "devin-plugin": "plugin:devin" };
+const seatKey = (provider, user) => `${LOGIN_AGENT[provider] ?? `plugin:${provider}`}\n${user}`;
+
+// A seat turned off in the pool stays signed in, so /v1/magpie/quotas still lists it; counting it
+// shows a seat routing never uses as free room (My Team, 2026-11-17: 53/61 shown, 52/60 real).
+// A seat with no login record is kept, so an unreadable logins.json cannot empty the pool.
+export function parseOffSeats(logins) {
+  const off = new Set();
+  for (const l of Array.isArray(logins) ? logins : []) {
+    if (typeof l?.agent !== "string" || typeof l?.user !== "string") continue;
+    if (l.on !== true && l.active !== true) off.add(`${l.agent}\n${l.user}`);
+  }
+  return off;
+}
+
+function readOffSeats(path) {
+  try {
+    return parseOffSeats(JSON.parse(readFileSync(path, "utf8")));
+  } catch {
+    return new Set();
+  }
+}
 
 export function parseAccountCaps(providersDoc) {
   const out = {};
@@ -124,8 +150,12 @@ function aggregate(rows, seatCaps = {}) {
   };
 }
 
-export function summarize(data, capsByProvider = {}) {
-  const rows = Array.isArray(data) ? data.filter((r) => String(r?.provider ?? "").startsWith("devin")) : [];
+export function summarize(data, capsByProvider = {}, offSeats = new Set()) {
+  const rows = Array.isArray(data)
+    ? data.filter(
+        (r) => String(r?.provider ?? "").startsWith("devin") && !offSeats.has(seatKey(r.provider, r?.user))
+      )
+    : [];
   const own = rows.filter((r) => r?.provider === OWN_PROVIDER);
   if (own.length === 0) throw new Failure("no-seats");
   const head = aggregate(own, capsByProvider[OWN_PROVIDER]);
@@ -158,7 +188,7 @@ async function fetchPoolHealth() {
   }
   if (!res.ok) throw new Failure(`http-${res.status}`);
   const body = await res.json().catch(() => null);
-  return summarize(body?.data, readAccountCaps(PROVIDERS_PATH));
+  return summarize(body?.data, readAccountCaps(PROVIDERS_PATH), readOffSeats(LOGINS_PATH));
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) try {

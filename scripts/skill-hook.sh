@@ -23,8 +23,13 @@ elif [[ "$event" == "UserPromptSubmit" ]]; then
 fi
 
 if [[ -n "$skill" && "$skill" != "null" && -n "$session_id" ]]; then
-  file="$CACHE_DIR/skill-${session_id}.txt"
-  printf '%s' "$skill" > "${file}.tmp" \
-    && mv "${file}.tmp" "$file"
+  case "$skill" in
+    clear|compact|reload-plugins|help|exit|quit|model|effort|fast|config|status|permissions|hooks|mcp|plugin|login|logout|doctor|memory|cost|resume|rename|color|vim|theme) ;;
+    *)
+      file="$CACHE_DIR/skill-${session_id}.txt"
+      printf '%s' "$skill" > "${file}.tmp" \
+        && mv "${file}.tmp" "$file"
+      ;;
+  esac
 fi
 echo '{}'
