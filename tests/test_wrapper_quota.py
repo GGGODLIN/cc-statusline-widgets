@@ -477,6 +477,140 @@ class WrapperQuotaContractTests(unittest.TestCase):
     self.write_json("vendor-devin-pool.status", {"failed_at": self.now, "reason": "network-error"})
     self.assertIn("Devin: network-error", self.run_wrapper())
 
+  def codex_pool_cache(
+    self,
+    *,
+    fetched_at=None,
+    user="alpha@example.com",
+    short_label="alpha",
+    u5=None,
+    r5_in=5400,
+    u7=40,
+    r7_in=3 * 86400 + 5400,
+    avail=2,
+    total=3,
+    err_seats=0,
+    free_avail=4,
+    free_total=6,
+  ):
+    return {
+      "fetched_at": self.now if fetched_at is None else fetched_at,
+      "data": {
+        "source": "http",
+        "active": {
+          "user": user,
+          "alias": None,
+          "short_label": short_label,
+          "plan": "plus" if u5 is not None else "promax",
+          "used_5h_pct": u5,
+          "reset_5h_at": None if u5 is None else self.now + r5_in,
+          "used_7d_pct": u7,
+          "reset_7d_at": None if r7_in is None else self.now + r7_in,
+          "using_credits": False,
+          "balance": None,
+          "last_served_at": self.now - 60,
+        },
+        "avail_seats": avail,
+        "window_avail_seats": avail,
+        "total_seats": total,
+        "error_seats": err_seats,
+        "accounts": [],
+        "free_pool": {
+          "avail_seats": free_avail,
+          "total_seats": free_total,
+          "error_seats": 0,
+          "used_30d_pct": 15,
+          "next_reset_at": self.now + 10 * 86400,
+        },
+      },
+    }
+
+  def test_codex_pool_promax_single_window_and_widget_log_fields(self):
+    self.write_json("vendor-codex-local.json", self.codex_cache(used=99))
+    self.write_json("vendor-codex-pool.json", self.codex_pool_cache(
+      user="alpha@example.com",
+      short_label="alpha",
+      u5=None,
+      u7=40,
+      avail=2,
+      total=3,
+      free_avail=4,
+      free_total=6,
+    ))
+
+    output = self.run_wrapper(log=True)
+
+    self.assertIn("GPT·alpha: 40% 3d1h (2/3)", output)
+    self.assertNotIn("GPT: 99%", output)
+    month = datetime.now().strftime("%Y-%m")
+    log_path = self.home / ".claude" / "projects" / "widget-log" / f"{month}.jsonl"
+    entry = json.loads(log_path.read_text().splitlines()[-1])
+    self.assertEqual(entry["codex_weekly_used_pct"], "40")
+    self.assertEqual(entry["codex_weekly_remaining_pct"], "60")
+    self.assertEqual(entry["codex_weekly_reset_at"], str(self.now + 3 * 86400 + 5400))
+    self.assertEqual(entry["codex_active_account"], "alpha@example.com")
+    self.assertEqual(entry["codex_5h_used_pct"], "")
+    self.assertEqual(entry["codex_avail_seats"], "2")
+    self.assertEqual(entry["codex_total_seats"], "3")
+    self.assertEqual(entry["codex_free_avail_seats"], "4")
+    self.assertEqual(entry["codex_free_total_seats"], "6")
+
+  def test_codex_pool_plus_dual_window_and_error_tag(self):
+    self.write_json("vendor-codex-pool.json", self.codex_pool_cache(
+      user="beta@example.com",
+      short_label="Acme Biz",
+      u5=25,
+      r5_in=5400,
+      u7=40,
+      r7_in=3 * 86400 + 5400,
+      avail=0,
+      total=4,
+      err_seats=1,
+    ))
+
+    output = self.run_wrapper(log=True)
+
+    self.assertIn("GPT·Acme Biz: 25% 1h30m | 40% 3d1h (0/4 !1)", output)
+    month = datetime.now().strftime("%Y-%m")
+    log_path = self.home / ".claude" / "projects" / "widget-log" / f"{month}.jsonl"
+    entry = json.loads(log_path.read_text().splitlines()[-1])
+    self.assertEqual(entry["codex_5h_used_pct"], "25")
+    self.assertEqual(entry["codex_active_account"], "beta@example.com")
+
+  def test_codex_pool_null_reset_omits_countdown_space(self):
+    self.write_json("vendor-codex-pool.json", self.codex_pool_cache(
+      short_label="alpha",
+      u5=None,
+      u7=35,
+      r7_in=None,
+      avail=1,
+      total=2,
+    ))
+
+    output = self.run_wrapper(log=True)
+
+    self.assertIn("GPT·alpha: 35% (1/2)", output)
+    month = datetime.now().strftime("%Y-%m")
+    log_path = self.home / ".claude" / "projects" / "widget-log" / f"{month}.jsonl"
+    entry = json.loads(log_path.read_text().splitlines()[-1])
+    self.assertEqual(entry["codex_weekly_reset_at"], "")
+
+  def test_codex_pool_stale_and_status_overrides(self):
+    self.write_json("vendor-codex-pool.json", self.codex_pool_cache(fetched_at=self.now - 901))
+    self.assertIn("GPT: stale", self.run_wrapper())
+
+    self.write_json("vendor-codex-pool.json", self.codex_pool_cache(fetched_at=self.now - 10))
+    self.write_json("vendor-codex-pool.status", {"failed_at": self.now, "reason": "stale-mirror"})
+    self.assertIn("GPT: stale-mirror", self.run_wrapper())
+
+    (self.cache / "vendor-codex-pool.json").unlink()
+    self.write_json("vendor-codex-pool.status", {"failed_at": self.now, "reason": "network-error"})
+    self.assertIn("GPT: network-error", self.run_wrapper())
+
+    self.write_raw("vendor-codex-pool.json", "{")
+    (self.cache / "vendor-codex-pool.status").unlink()
+    self.assertIn("GPT: invalid cache", self.run_wrapper())
+
 
 if __name__ == "__main__":
   unittest.main()

@@ -157,6 +157,7 @@ fmt_glm_countdown_var() {
 
 GLM_5H_PCT="" ; GLM_W_PCT="" ; GLM_LEVEL="" ; GLM_PILL_OUT="" ; GLM_PILL_BG=""
 CODEX_WEEKLY_REMAINING_PCT="" ; CODEX_WEEKLY_USED_PCT="" ; CODEX_WEEKLY_RESET_AT="" ; CODEX_PILL_OUT=""
+CODEX_ACTIVE_ACCOUNT="" ; CODEX_5H_USED_PCT="" ; CODEX_AVAIL_SEATS="" ; CODEX_TOTAL_SEATS="" ; CODEX_FREE_AVAIL_SEATS="" ; CODEX_FREE_TOTAL_SEATS=""
 GROK_WEEKLY_USED_PCT="" ; GROK_WEEKLY_RESET_AT="" ; GROK_PILL_OUT=""
 GROK_BOT_USED_PCT="" ; GROK_BOT_RESET_AT="" ; GROK_BOT_OUT=""
 DEVIN_1D_USED_PCT="" ; DEVIN_7D_USED_PCT="" ; DEVIN_AVAIL_SEATS="" ; DEVIN_TOTAL_SEATS="" ; DEVIN_BALANCE_USD="" ; DEVIN_PILL_OUT=""
@@ -1083,7 +1084,154 @@ fmt_codex_quota() {
   CODEX_WEEKLY_REMAINING_PCT=""
   CODEX_WEEKLY_USED_PCT=""
   CODEX_WEEKLY_RESET_AT=""
+  CODEX_ACTIVE_ACCOUNT=""
+  CODEX_5H_USED_PCT=""
+  CODEX_AVAIL_SEATS=""
+  CODEX_TOTAL_SEATS=""
+  CODEX_FREE_AVAIL_SEATS=""
+  CODEX_FREE_TOTAL_SEATS=""
   CODEX_PILL_OUT=""
+
+  local pool_json="$QUOTA_CACHE_DIR/vendor-codex-pool.json"
+  local pool_status="$QUOTA_CACHE_DIR/vendor-codex-pool.status"
+  if [[ -f "$pool_json" || -f "$pool_status" ]]; then
+    local status_parsed="" failed_at="" reason=""
+    if [[ -f "$pool_status" ]]; then
+      status_parsed=$(jq -er '
+        select(type == "object")
+        | .failed_at as $failed
+        | .reason as $reason
+        | select(($failed | type) == "number" and ($failed | isfinite) and (($failed | floor) == $failed))
+        | select(($reason | type) == "string" and ($reason | test("^[a-z0-9-]+$")))
+        | [$failed, $reason]
+        | @tsv
+      ' "$pool_status" 2>/dev/null) || {
+        CODEX_PILL_OUT="${RED}GPT: invalid cache${RST}"
+        printf '%s' "$CODEX_PILL_OUT"
+        return
+      }
+      IFS=$'\t' read -r failed_at reason <<<"$status_parsed"
+    fi
+
+    if [[ ! -f "$pool_json" ]]; then
+      CODEX_PILL_OUT="${RED}GPT: ${reason}${RST}"
+      printf '%s' "$CODEX_PILL_OUT"
+      return
+    fi
+
+    local parsed fetched_at short_label active_account u5 r5 u7 r7 avail total err_seats free_avail free_total _c_end
+    parsed=$(jq -er '
+      def valid_number: type == "number" and isfinite;
+      def valid_pct_or_null: . == null or (valid_number and . >= 0 and . <= 100);
+      def valid_ts_or_null: . == null or (valid_number and (. | floor) == . and . > 0);
+      def clean_str: gsub("[\u0000-\u001f]"; "");
+      select(type == "object")
+      | .fetched_at as $fetched
+      | .data as $d
+      | select(($fetched | valid_number) and (($fetched | floor) == $fetched))
+      | select(($d | type) == "object")
+      | ($d.active) as $a
+      | select(($a | type) == "object")
+      | select(($a.short_label | type) == "string" and ($a.short_label | length) > 0)
+      | select($a.used_5h_pct | valid_pct_or_null)
+      | select($a.reset_5h_at | valid_ts_or_null)
+      | select($a.used_7d_pct | valid_pct_or_null)
+      | select($a.reset_7d_at | valid_ts_or_null)
+      | select(($d.avail_seats | valid_number) and $d.avail_seats >= 0)
+      | select(($d.total_seats | valid_number) and $d.total_seats > 0)
+      | ($d.free_pool // {}) as $fp
+      | [
+          ($fetched | floor | tostring),
+          ($a.short_label | clean_str),
+          (($a.user // $a.short_label) | tostring | clean_str),
+          (if $a.used_5h_pct == null then "" else ($a.used_5h_pct | round | tostring) end),
+          (if $a.reset_5h_at == null then "" else ($a.reset_5h_at | floor | tostring) end),
+          (if $a.used_7d_pct == null then "" else ($a.used_7d_pct | round | tostring) end),
+          (if $a.reset_7d_at == null then "" else ($a.reset_7d_at | floor | tostring) end),
+          ($d.avail_seats | floor | tostring),
+          ($d.total_seats | floor | tostring),
+          (($d.error_seats // 0) | floor | tostring),
+          (if $fp.avail_seats == null then "" else ($fp.avail_seats | floor | tostring) end),
+          (if $fp.total_seats == null then "" else ($fp.total_seats | floor | tostring) end),
+          "END"
+        ]
+      | join("\u001f")
+    ' "$pool_json" 2>/dev/null) || {
+      CODEX_PILL_OUT="${RED}GPT: invalid cache${RST}"
+      printf '%s' "$CODEX_PILL_OUT"
+      return
+    }
+    IFS=$'\037' read -r fetched_at short_label active_account u5 r5 u7 r7 avail total err_seats free_avail free_total _c_end <<<"$parsed"
+
+    if [[ -n "$failed_at" ]] && (( failed_at >= fetched_at )); then
+      CODEX_PILL_OUT="${RED}GPT: ${reason}${RST}"
+      printf '%s' "$CODEX_PILL_OUT"
+      return
+    fi
+
+    if (( NOW_SEC_RENDER - fetched_at > 900 )); then
+      CODEX_PILL_OUT="${RED}GPT: stale${RST}"
+      printf '%s' "$CODEX_PILL_OUT"
+      return
+    fi
+
+    CODEX_ACTIVE_ACCOUNT="$active_account"
+    CODEX_5H_USED_PCT="$u5"
+    CODEX_WEEKLY_USED_PCT="$u7"
+    if [[ -n "$u7" ]]; then
+      CODEX_WEEKLY_REMAINING_PCT=$(( 100 - u7 ))
+    fi
+    CODEX_WEEKLY_RESET_AT="$r7"
+    CODEX_AVAIL_SEATS="$avail"
+    CODEX_TOTAL_SEATS="$total"
+    CODEX_FREE_AVAIL_SEATS="$free_avail"
+    CODEX_FREE_TOTAL_SEATS="$free_total"
+
+    local seat_color="$GREEN" err_tag=""
+    if (( avail == 0 )); then seat_color="$RED_BOLD"
+    elif (( avail * 5 <= total )); then seat_color="$YELLOW"
+    fi
+    if (( ${err_seats:-0} > 0 )); then
+      err_tag=" ${RED}!${err_seats}${RST}"
+    fi
+
+    local body=""
+    if [[ -n "$u5" ]]; then
+      local c5 c7 cd5="" cd7=""
+      quota_pct_color_var c5 "$u5"
+      if [[ -n "$r5" ]]; then
+        fmt_glm_countdown_var cd5 "$(( r5 * 1000 ))"
+        body="${c5}${u5}%${RST}${BLUE} ${cd5}"
+      else
+        body="${c5}${u5}%${RST}${BLUE}"
+      fi
+      if [[ -n "$u7" ]]; then
+        quota_pct_color_var c7 "$u7"
+        if [[ -n "$r7" ]]; then
+          fmt_glm_countdown_var cd7 "$(( r7 * 1000 ))"
+          body="${body} | ${RST}${c7}${u7}%${RST}${BLUE} ${cd7} (${RST}${seat_color}${avail}/${total}${RST}${err_tag}${BLUE})${RST}"
+        else
+          body="${body} | ${RST}${c7}${u7}%${RST}${BLUE} (${RST}${seat_color}${avail}/${total}${RST}${err_tag}${BLUE})${RST}"
+        fi
+      else
+        body="${body} | ${RST}${GRAY}--${RST}${BLUE} (${RST}${seat_color}${avail}/${total}${RST}${err_tag}${BLUE})${RST}"
+      fi
+    elif [[ -n "$u7" ]]; then
+      local c7 cd7=""
+      quota_pct_color_var c7 "$u7"
+      if [[ -n "$r7" ]]; then
+        fmt_glm_countdown_var cd7 "$(( r7 * 1000 ))"
+        body="${c7}${u7}%${RST}${BLUE} ${cd7} (${RST}${seat_color}${avail}/${total}${RST}${err_tag}${BLUE})${RST}"
+      else
+        body="${c7}${u7}%${RST}${BLUE} (${RST}${seat_color}${avail}/${total}${RST}${err_tag}${BLUE})${RST}"
+      fi
+    else
+      body="${GRAY}--${RST}${BLUE} (${RST}${seat_color}${avail}/${total}${RST}${err_tag}${BLUE})${RST}"
+    fi
+    CODEX_PILL_OUT="${BLUE}GPT·${short_label}: ${RST}${body}"
+    printf '%s' "$CODEX_PILL_OUT"
+    return
+  fi
 
   local json="$QUOTA_CACHE_DIR/vendor-codex-local.json"
   local status="$QUOTA_CACHE_DIR/vendor-codex-local.status"
@@ -1426,6 +1574,8 @@ fi
 vendor_memo="$CACHE_DIR/vendor-pills.memo"
 _v_samples="${GROK_QUOTA_SAMPLES:-$HOME/.cli-proxy-api/grok-quota-samples.jsonl}"
 v_stat=$(stat -f '%Fm:%z' \
+  "$QUOTA_CACHE_DIR/vendor-codex-pool.json" \
+  "$QUOTA_CACHE_DIR/vendor-codex-pool.status" \
   "$QUOTA_CACHE_DIR/vendor-codex-local.json" \
   "$QUOTA_CACHE_DIR/vendor-codex-local.status" \
   "$_v_samples" \
@@ -1440,14 +1590,16 @@ if [[ -f "$vendor_memo" ]]; then
   {
     read -r v_memo_ts v_memo_stat
     IFS=$'\037' read -r CODEX_PILL_OUT CODEX_WEEKLY_REMAINING_PCT CODEX_WEEKLY_USED_PCT CODEX_WEEKLY_RESET_AT \
+      CODEX_ACTIVE_ACCOUNT CODEX_5H_USED_PCT CODEX_AVAIL_SEATS CODEX_TOTAL_SEATS CODEX_FREE_AVAIL_SEATS CODEX_FREE_TOTAL_SEATS \
       GROK_PILL_OUT GROK_WEEKLY_USED_PCT GROK_WEEKLY_RESET_AT \
       GROK_BOT_OUT GROK_BOT_USED_PCT GROK_BOT_RESET_AT \
       DEVIN_PILL_OUT DEVIN_1D_USED_PCT DEVIN_7D_USED_PCT DEVIN_AVAIL_SEATS DEVIN_TOTAL_SEATS DEVIN_BALANCE_USD _v_end
   } < "$vendor_memo" 2>/dev/null || true
-  if (( NOW_SEC_RENDER - ${v_memo_ts:-0} < 5 )) && [[ "$v_memo_stat" == "$v_stat" ]]; then
+  if (( NOW_SEC_RENDER - ${v_memo_ts:-0} < 5 )) && [[ "$v_memo_stat" == "$v_stat" && "${_v_end:-}" == "END" ]]; then
     v_cached=1
   else
     CODEX_PILL_OUT="" ; CODEX_WEEKLY_REMAINING_PCT="" ; CODEX_WEEKLY_USED_PCT="" ; CODEX_WEEKLY_RESET_AT=""
+    CODEX_ACTIVE_ACCOUNT="" ; CODEX_5H_USED_PCT="" ; CODEX_AVAIL_SEATS="" ; CODEX_TOTAL_SEATS="" ; CODEX_FREE_AVAIL_SEATS="" ; CODEX_FREE_TOTAL_SEATS=""
     GROK_PILL_OUT="" ; GROK_WEEKLY_USED_PCT="" ; GROK_WEEKLY_RESET_AT=""
     GROK_BOT_OUT="" ; GROK_BOT_USED_PCT="" ; GROK_BOT_RESET_AT=""
     DEVIN_PILL_OUT="" ; DEVIN_1D_USED_PCT="" ; DEVIN_7D_USED_PCT="" ; DEVIN_AVAIL_SEATS="" ; DEVIN_TOTAL_SEATS="" ; DEVIN_BALANCE_USD=""
@@ -1460,9 +1612,10 @@ if (( ! v_cached )); then
   fmt_devin_pool_quota >/dev/null 2>&1 || true
   if [[ -d "$CACHE_DIR" ]]; then
     memo_tmp=$(mktemp "$CACHE_DIR/.vendor-pills.XXXXXX" 2>/dev/null) &&
-      printf '%s %s\n%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037END\n' \
+      printf '%s %s\n%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037END\n' \
         "$NOW_SEC_RENDER" "$v_stat" \
         "$CODEX_PILL_OUT" "$CODEX_WEEKLY_REMAINING_PCT" "$CODEX_WEEKLY_USED_PCT" "$CODEX_WEEKLY_RESET_AT" \
+        "$CODEX_ACTIVE_ACCOUNT" "$CODEX_5H_USED_PCT" "$CODEX_AVAIL_SEATS" "$CODEX_TOTAL_SEATS" "$CODEX_FREE_AVAIL_SEATS" "$CODEX_FREE_TOTAL_SEATS" \
         "$GROK_PILL_OUT" "$GROK_WEEKLY_USED_PCT" "$GROK_WEEKLY_RESET_AT" \
         "$GROK_BOT_OUT" "$GROK_BOT_USED_PCT" "$GROK_BOT_RESET_AT" \
         "$DEVIN_PILL_OUT" "$DEVIN_1D_USED_PCT" "$DEVIN_7D_USED_PCT" "$DEVIN_AVAIL_SEATS" "$DEVIN_TOTAL_SEATS" "$DEVIN_BALANCE_USD" > "$memo_tmp" &&
@@ -1865,6 +2018,12 @@ if (( NOW_SEC - LAST_SEC >= 300 )); then
     --arg codex_weekly_remaining_pct "$CODEX_WEEKLY_REMAINING_PCT" \
     --arg codex_weekly_used_pct "$CODEX_WEEKLY_USED_PCT" \
     --arg codex_weekly_reset_at "$CODEX_WEEKLY_RESET_AT" \
+    --arg codex_active_account "$CODEX_ACTIVE_ACCOUNT" \
+    --arg codex_5h_used_pct "$CODEX_5H_USED_PCT" \
+    --arg codex_avail_seats "$CODEX_AVAIL_SEATS" \
+    --arg codex_total_seats "$CODEX_TOTAL_SEATS" \
+    --arg codex_free_avail_seats "$CODEX_FREE_AVAIL_SEATS" \
+    --arg codex_free_total_seats "$CODEX_FREE_TOTAL_SEATS" \
     --arg grok_weekly_used_pct "$GROK_WEEKLY_USED_PCT" \
     --arg grok_weekly_reset_at "$GROK_WEEKLY_RESET_AT" \
     --arg grok_bot_used_pct "$GROK_BOT_USED_PCT" \
