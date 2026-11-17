@@ -1228,7 +1228,7 @@ fmt_codex_quota() {
     else
       body="${GRAY}--${RST}${BLUE} (${RST}${seat_color}${avail}/${total}${RST}${err_tag}${BLUE})${RST}"
     fi
-    CODEX_PILL_OUT="${BLUE}GPT·${short_label}: ${RST}${body}"
+    CODEX_PILL_OUT="${BLUE}GPT: ${RST}${body}"
     printf '%s' "$CODEX_PILL_OUT"
     return
   fi

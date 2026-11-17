@@ -540,7 +540,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     output = self.run_wrapper(log=True)
 
-    self.assertIn("GPT·alpha: 40% 3d1h (2/3)", output)
+    self.assertIn("GPT: 40% 3d1h (2/3)", output)
     self.assertNotIn("GPT: 99%", output)
     month = datetime.now().strftime("%Y-%m")
     log_path = self.home / ".claude" / "projects" / "widget-log" / f"{month}.jsonl"
@@ -570,7 +570,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     output = self.run_wrapper(log=True)
 
-    self.assertIn("GPT·Acme Biz: 25% 1h30m | 40% 3d1h (0/4 !1)", output)
+    self.assertIn("GPT: 25% 1h30m | 40% 3d1h (0/4 !1)", output)
     month = datetime.now().strftime("%Y-%m")
     log_path = self.home / ".claude" / "projects" / "widget-log" / f"{month}.jsonl"
     entry = json.loads(log_path.read_text().splitlines()[-1])
@@ -589,7 +589,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     output = self.run_wrapper(log=True)
 
-    self.assertIn("GPT·alpha: 35% (1/2)", output)
+    self.assertIn("GPT: 35% (1/2)", output)
     month = datetime.now().strftime("%Y-%m")
     log_path = self.home / ".claude" / "projects" / "widget-log" / f"{month}.jsonl"
     entry = json.loads(log_path.read_text().splitlines()[-1])
