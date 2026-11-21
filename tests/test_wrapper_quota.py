@@ -92,7 +92,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
       "usd": 0.1
     }
 
-  def run_wrapper(self, *, log=False):
+  def run_wrapper(self, *, log=False, strip_ansi=True):
     env = os.environ.copy()
     env.update({
       "HOME": str(self.home),
@@ -111,7 +111,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
       env=env,
       check=True
     )
-    return ANSI.sub("", result.stdout)
+    return ANSI.sub("", result.stdout) if strip_ansi else result.stdout
 
   def test_codex_normal_uses_local_weekly_and_ignores_legacy(self):
     self.write_json("vendor-codex-local.json", self.codex_cache())
@@ -439,19 +439,23 @@ class WrapperQuotaContractTests(unittest.TestCase):
     total=41,
     err_seats=0,
     balance="15042.53",
+    tiers=None,
   ):
+    data = {
+      "used_1d_pct": u1,
+      "reset_1d_at": None if r1_in is None else self.now + r1_in,
+      "used_7d_pct": u7,
+      "reset_7d_at": None if r7_in is None else self.now + r7_in,
+      "avail_seats": avail,
+      "total_seats": total,
+      "error_seats": err_seats,
+      "balance_usd": balance,
+    }
+    if tiers is not None:
+      data["tiers"] = tiers
     return {
       "fetched_at": self.now if fetched_at is None else fetched_at,
-      "data": {
-        "used_1d_pct": u1,
-        "reset_1d_at": self.now + r1_in,
-        "used_7d_pct": u7,
-        "reset_7d_at": self.now + r7_in,
-        "avail_seats": avail,
-        "total_seats": total,
-        "error_seats": err_seats,
-        "balance_usd": balance,
-      },
+      "data": data,
     }
 
   def test_devin_pool_renders_1d_7d_and_seat_ratio_and_logs_fields(self):
@@ -468,6 +472,123 @@ class WrapperQuotaContractTests(unittest.TestCase):
     self.assertEqual(entry["devin_avail_seats"], "37")
     self.assertEqual(entry["devin_total_seats"], "41")
     self.assertEqual(entry["devin_balance_usd"], "15042.53")
+
+  def test_devin_pool_mixed_teams_and_max_renders_tiered_pill(self):
+    self.write_json("vendor-devin-pool.json", self.devin_pool_cache(
+      u1=22,
+      r1_in=5400,
+      u7=33,
+      r7_in=86400 + 5 * 3600,
+      avail=4,
+      total=4,
+      tiers={
+        "teams": {
+          "used_1d_pct": 22,
+          "reset_1d_at": self.now + 5400,
+          "used_7d_pct": 44,
+          "reset_7d_at": self.now + 86400 + 5 * 3600,
+          "avail_seats": 3,
+          "total_seats": 3,
+          "error_seats": 0,
+        },
+        "max": {
+          "used_7d_pct": 0,
+          "reset_7d_at": self.now + 86400 + 5 * 3600,
+          "avail_seats": 1,
+          "total_seats": 1,
+          "error_seats": 0,
+        },
+      },
+    ))
+
+    output = self.run_wrapper(log=True)
+
+    self.assertIn("Devin: T 22% 1h30m | M 0% 1d5h (4/4)", output)
+    month = datetime.now().strftime("%Y-%m")
+    log_path = self.home / ".claude" / "projects" / "widget-log" / f"{month}.jsonl"
+    entry = json.loads(log_path.read_text().splitlines()[-1])
+    self.assertEqual(entry["devin_1d_used_pct"], "22")
+    self.assertEqual(entry["devin_7d_used_pct"], "0")
+    self.assertEqual(entry["devin_avail_seats"], "4")
+    self.assertEqual(entry["devin_total_seats"], "4")
+
+  def test_devin_pool_max_only_null_1d_renders_7d_only_mode(self):
+    self.write_json("vendor-devin-pool.json", self.devin_pool_cache(
+      u1=None,
+      r1_in=None,
+      u7=12,
+      r7_in=3 * 86400 + 5400,
+      avail=1,
+      total=1,
+      tiers={
+        "teams": None,
+        "max": {
+          "used_7d_pct": 12,
+          "reset_7d_at": self.now + 3 * 86400 + 5400,
+          "avail_seats": 1,
+          "total_seats": 1,
+          "error_seats": 0,
+        },
+      },
+    ))
+
+    output = self.run_wrapper(log=True)
+
+    self.assertIn("Devin: 12% 3d1h (1/1)", output)
+    self.assertNotIn("invalid cache", output)
+    month = datetime.now().strftime("%Y-%m")
+    log_path = self.home / ".claude" / "projects" / "widget-log" / f"{month}.jsonl"
+    entry = json.loads(log_path.read_text().splitlines()[-1])
+    self.assertEqual(entry["devin_1d_used_pct"], "")
+    self.assertEqual(entry["devin_7d_used_pct"], "12")
+    self.assertEqual(entry["devin_avail_seats"], "1")
+    self.assertEqual(entry["devin_total_seats"], "1")
+
+  def test_devin_pool_teams_only_with_tiers_renders_1d_7d(self):
+    self.write_json("vendor-devin-pool.json", self.devin_pool_cache(
+      u1=25,
+      r1_in=5400,
+      u7=44,
+      r7_in=2 * 86400 + 3600,
+      avail=3,
+      total=3,
+      tiers={
+        "teams": {
+          "used_1d_pct": 25,
+          "reset_1d_at": self.now + 5400,
+          "used_7d_pct": 44,
+          "reset_7d_at": self.now + 2 * 86400 + 3600,
+          "avail_seats": 3,
+          "total_seats": 3,
+          "error_seats": 0,
+        },
+        "max": None,
+      },
+    ))
+
+    output = self.run_wrapper()
+
+    self.assertIn("Devin: 25% 1h30m | 44% 2d1h (3/3)", output)
+
+  def test_devin_pool_seat_colors_for_zero_and_small_pools(self):
+    self.write_json("vendor-devin-pool.json", self.devin_pool_cache(avail=0, total=4))
+    raw_zero = self.run_wrapper(strip_ansi=False)
+    self.assertIn("\x1b[1;38;5;160m0/4", raw_zero)
+
+    self.write_json("vendor-devin-pool.json", self.devin_pool_cache(avail=1, total=4))
+    raw_low = self.run_wrapper(strip_ansi=False)
+    self.assertIn("\x1b[38;5;178m1/4", raw_low)
+
+    self.write_json("vendor-devin-pool.json", self.devin_pool_cache(
+      u1=None,
+      r1_in=None,
+      u7=10,
+      avail=1,
+      total=1,
+      tiers={"teams": None, "max": {"used_7d_pct": 10, "reset_7d_at": self.now + 3600, "avail_seats": 1, "total_seats": 1, "error_seats": 0}},
+    ))
+    raw_single_ok = self.run_wrapper(strip_ansi=False)
+    self.assertIn("\x1b[38;5;70m1/1", raw_single_ok)
 
   def test_devin_pool_stale_and_status_override(self):
     self.write_json("vendor-devin-pool.json", self.devin_pool_cache(fetched_at=self.now - 901))

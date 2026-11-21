@@ -1,14 +1,22 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { parseAccountCaps, parseOffSeats, summarize } from "../scripts/devin-pool-usage.mjs";
+import { parseAccountCaps, parseOffSeats, parsePluginAuthPlans, summarize } from "../scripts/devin-pool-usage.mjs";
 
-const seat = (provider, used1d, used7d, user = "seat@example.com · ORG") => ({
+const seat = (provider, used1d, used7d, user = "seat@example.com · ORG", extra = {}) => ({
   provider,
   user,
   windows: [
     { name: "1 day", used: used1d, resetsAt: "2026-11-10T08:00:00Z" },
     { name: "7 days", used: used7d, resetsAt: "2026-11-15T08:00:00Z" },
   ],
+  ...extra,
+});
+
+const maxSeat = (provider, used7d, user = "max@example.com · My Team", extra = {}) => ({
+  provider,
+  user,
+  windows: [{ name: "7 days", used: used7d, resetsAt: "2026-11-22T08:00:00Z" }],
+  ...extra,
 });
 
 test("headline numbers count only the own pool; weekly-exhausted seat caps effective 1d at 100%", () => {
@@ -80,19 +88,100 @@ test("no own seats is a failure even when a friend pool exists", () => {
   assert.throws(() => summarize([seat("devin-friend", 0, 0)]), /no-seats/);
 });
 
-test("parseOffSeats excludes logins where neither on nor active is true", () => {
-  const off = parseOffSeats([
-    { agent: "plugin:devin", user: "enabled@example.com · ORG", on: true },
-    { agent: "plugin:devin", user: "disabled@example.com · ORG" },
-  ]);
+test("parseOffSeats excludes logins where neither on nor active is true, normalizes case, and drops paused/lapsed/hidden", () => {
+  const off = parseOffSeats({
+    logins: [
+      { agent: "plugin:devin", user: "Enabled@Example.com · ORG", on: true },
+      { agent: "plugin:devin", user: "disabled@example.com · ORG" },
+      { agent: "plugin:devin", user: "paused@example.com · ORG", on: true, paused: true },
+      { agent: "plugin:devin", user: "lapsed@example.com · ORG", active: true, lapsed: true },
+      { agent: "plugin:devin", user: "hidden@example.com · ORG", on: true, hidden: true },
+    ],
+  });
   const out = summarize(
     [
       seat("devin-plugin", 10, 20, "enabled@example.com · ORG"),
       seat("devin-plugin", 0, 0, "disabled@example.com · ORG"),
+      seat("devin-plugin", 0, 0, "paused@example.com · ORG"),
+      seat("devin-plugin", 0, 0, "lapsed@example.com · ORG"),
+      seat("devin-plugin", 0, 0, "hidden@example.com · ORG"),
     ],
     {},
     off
   );
   assert.equal(out.total_seats, 1);
   assert.equal(out.avail_seats, 1);
+});
+
+test("mixed 3 Teams + 1 Max never penalizes Max seat and emits tier and account breakdowns", () => {
+  const plans = parsePluginAuthPlans({
+    devin: { key: "SECRET_SHOULD_BE_IGNORED", metadata: { email: "philiplin@calyxtechs.com · GGGODLIN", plan: "Devin Teams" } },
+    "devin#01": { key: "SECRET_2", metadata: { email: "qwe70301@gmail.com · GGGODLIN", plan: "Devin Teams" } },
+    "devin#02": { key: "SECRET_3", metadata: { email: "qwe70301+alec.yeung@gmail.com · GGGODLIN", plan: "Devin Teams" } },
+    "devin#max": { key: "SECRET_4", metadata: { email: "qwe70302@gmail.com · My Team", plan: "Devin Max" } },
+  });
+  const out = summarize(
+    [
+      seat("devin-plugin", 0, 52, "qwe70301@gmail.com · GGGODLIN", { until: "2026-11-29T03:58:21Z" }),
+      seat("devin-plugin", 17, 8, "qwe70301+alec.yeung@gmail.com · GGGODLIN", { until: "2026-11-29T03:58:21Z" }),
+      seat("devin-plugin", 0, 73, "philiplin@calyxtechs.com · GGGODLIN", { until: "2026-11-29T03:58:21Z" }),
+      maxSeat("devin-plugin", 0, "qwe70302@gmail.com · My Team", { until: "2026-12-21T00:57:39Z" }),
+    ],
+    {},
+    new Set(),
+    plans
+  );
+
+  // Teams effRem1d = min(100,96) + min(83,184) + min(100,54) = 96 + 83 + 54 = 233 -> avg rem 77.67 -> 22% used
+  assert.equal(out.avail_seats, 4);
+  assert.equal(out.total_seats, 4);
+  assert.equal(out.used_1d_pct, 22);
+  assert.equal(out.used_7d_pct, 33);
+  assert.equal(out.tiers.teams.used_1d_pct, 22);
+  assert.equal(out.tiers.teams.used_7d_pct, 44);
+  assert.equal(out.tiers.teams.avail_seats, 3);
+  assert.equal(out.tiers.teams.total_seats, 3);
+  assert.equal(out.tiers.max.used_7d_pct, 0);
+  assert.equal(out.tiers.max.avail_seats, 1);
+  assert.equal(out.tiers.max.total_seats, 1);
+  assert.equal(out.accounts.length, 4);
+  assert.deepEqual(
+    out.accounts.map((a) => [a.short_label, a.tier, a.plan, a.available, a.used_1d_pct, a.used_7d_pct]),
+    [
+      ["qwe70301", "teams", "Devin Teams", true, 0, 52],
+      ["alec.yeung", "teams", "Devin Teams", true, 17, 8],
+      ["philiplin", "teams", "Devin Teams", true, 0, 73],
+      ["qwe70302", "max", "Devin Max", true, null, 0],
+    ]
+  );
+  assert.equal(JSON.stringify(out).includes("SECRET_"), false);
+});
+
+test("post-11/29 Max-only 7d-only mode emits null 1d fields without failing invalid-response", () => {
+  const plans = parsePluginAuthPlans({
+    "devin#max": { metadata: { email: "qwe70302@gmail.com · My Team", plan: "Devin Max" } },
+  });
+  const availOut = summarize(
+    [maxSeat("devin-plugin", 12, "qwe70302@gmail.com · My Team", { until: "2026-12-21T00:57:39Z" })],
+    {},
+    new Set(),
+    plans
+  );
+  assert.equal(availOut.used_1d_pct, null);
+  assert.equal(availOut.reset_1d_at, null);
+  assert.equal(availOut.used_7d_pct, 12);
+  assert.equal(availOut.avail_seats, 1);
+  assert.equal(availOut.total_seats, 1);
+  assert.equal(availOut.tiers.teams, null);
+  assert.equal(availOut.tiers.max.used_7d_pct, 12);
+  assert.equal(availOut.tiers.max.avail_seats, 1);
+
+  const fullOut = summarize(
+    [maxSeat("devin-plugin", 100, "qwe70302@gmail.com · My Team")],
+    {},
+    new Set(),
+    plans
+  );
+  assert.equal(fullOut.avail_seats, 0);
+  assert.equal(fullOut.used_7d_pct, 100);
 });

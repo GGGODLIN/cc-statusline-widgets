@@ -1438,37 +1438,70 @@ fmt_devin_pool_quota() {
   local status="$QUOTA_CACHE_DIR/vendor-devin-pool.status"
   [[ ! -f "$json" && ! -f "$status" ]] && return
 
-  local fetched_at="" u1="" r1="" u7="" r7="" avail="" total="" err_seats="" bal=""
+  local fetched_at="" mode="" u1="" r1="" u7="" r7="" avail="" total="" err_seats="" bal="" _d_end=""
   if [[ -f "$json" ]]; then
     local parsed
     parsed=$(jq -er '
+      def valid_number: type == "number" and isfinite;
+      def valid_pct_or_null: . == null or (valid_number and . >= 0 and . <= 100);
+      def valid_ts_or_null: . == null or (valid_number and . > 0);
       select(type == "object")
-      | select((.fetched_at | type) == "number")
+      | select((.fetched_at | valid_number))
       | .data as $d
       | select(($d | type) == "object")
-      | select(($d.used_1d_pct | type) == "number" and $d.used_1d_pct >= 0 and $d.used_1d_pct <= 100)
-      | select(($d.reset_1d_at | type) == "number" and $d.reset_1d_at > 0)
-      | select(($d.used_7d_pct | type) == "number" and $d.used_7d_pct >= 0 and $d.used_7d_pct <= 100)
-      | select(($d.reset_7d_at | type) == "number" and $d.reset_7d_at > 0)
-      | select(($d.avail_seats | type) == "number" and ($d.total_seats | type) == "number" and $d.total_seats > 0)
+      | select($d.used_1d_pct | valid_pct_or_null)
+      | select($d.reset_1d_at | valid_ts_or_null)
+      | select($d.used_7d_pct | valid_pct_or_null)
+      | select($d.reset_7d_at | valid_ts_or_null)
+      | select(($d.avail_seats | valid_number) and $d.avail_seats >= 0)
+      | select(($d.total_seats | valid_number) and $d.total_seats > 0)
+      | ($d.tiers // null) as $t
+      | (if ($t | type) == "object" then
+           if ($t.teams != null and $t.max != null) then "mixed"
+           elif ($t.teams != null) then "teams"
+           elif ($t.max != null) then "max"
+           else "teams" end
+         elif $d.used_1d_pct == null and $d.used_7d_pct != null then "max"
+         else "teams" end) as $mode
+      | (if $mode == "mixed" or $mode == "teams" then
+           (if ($t | type) == "object" and ($t.teams | type) == "object" then $t.teams.used_1d_pct else $d.used_1d_pct end)
+         else null end) as $u1
+      | (if $mode == "mixed" or $mode == "teams" then
+           (if ($t | type) == "object" and ($t.teams | type) == "object" then $t.teams.reset_1d_at else $d.reset_1d_at end)
+         else null end) as $r1
+      | (if $mode == "mixed" or $mode == "max" then
+           (if ($t | type) == "object" and ($t.max | type) == "object" then $t.max.used_7d_pct else $d.used_7d_pct end)
+         elif ($t | type) == "object" and ($t.teams | type) == "object" then $t.teams.used_7d_pct
+         else $d.used_7d_pct end) as $u7
+      | (if $mode == "mixed" or $mode == "max" then
+           (if ($t | type) == "object" and ($t.max | type) == "object" then $t.max.reset_7d_at else $d.reset_7d_at end)
+         elif ($t | type) == "object" and ($t.teams | type) == "object" then $t.teams.reset_7d_at
+         else $d.reset_7d_at end) as $r7
+      | select($u1 | valid_pct_or_null)
+      | select($r1 | valid_ts_or_null)
+      | select($u7 | valid_pct_or_null)
+      | select($r7 | valid_ts_or_null)
+      | select($u1 != null or $u7 != null)
       | [
-          (.fetched_at | floor),
-          ($d.used_1d_pct | round),
-          ($d.reset_1d_at | floor),
-          ($d.used_7d_pct | round),
-          ($d.reset_7d_at | floor),
-          ($d.avail_seats | floor),
-          ($d.total_seats | floor),
-          (($d.error_seats // 0) | floor),
-          ($d.balance_usd // "")
+          (.fetched_at | floor | tostring),
+          $mode,
+          (if $u1 == null then "" else ($u1 | round | tostring) end),
+          (if $r1 == null then "" else ($r1 | floor | tostring) end),
+          (if $u7 == null then "" else ($u7 | round | tostring) end),
+          (if $r7 == null then "" else ($r7 | floor | tostring) end),
+          ($d.avail_seats | floor | tostring),
+          ($d.total_seats | floor | tostring),
+          (($d.error_seats // 0) | floor | tostring),
+          (($d.balance_usd // "") | tostring),
+          "END"
         ]
-      | @tsv
+      | join("\u001f")
     ' "$json" 2>/dev/null) || {
       DEVIN_PILL_OUT="${RED}Devin: invalid cache${RST}"
       printf '%s' "$DEVIN_PILL_OUT"
       return
     }
-    IFS=$'\t' read -r fetched_at u1 r1 u7 r7 avail total err_seats bal <<<"$parsed"
+    IFS=$'\037' read -r fetched_at mode u1 r1 u7 r7 avail total err_seats bal _d_end <<<"$parsed"
   fi
 
   if [[ -f "$status" ]]; then
@@ -1497,18 +1530,73 @@ fmt_devin_pool_quota() {
   DEVIN_TOTAL_SEATS="$total"
   DEVIN_BALANCE_USD="$bal"
 
-  local c1 c7 cd1 cd7 seat_color="$GREEN" err_tag=""
-  quota_pct_color_var c1 "$u1"
-  quota_pct_color_var c7 "$u7"
-  fmt_glm_countdown_var cd1 "$(( r1 * 1000 ))"
-  fmt_glm_countdown_var cd7 "$(( r7 * 1000 ))"
+  local c1="" c7="" cd1="" cd7="" part1="" part2="" seat_color="$GREEN" err_tag=""
   if (( avail == 0 )); then seat_color="$RED_BOLD"
-  elif (( avail * 5 <= total )); then seat_color="$YELLOW"
+  elif (( (avail <= 1 && total > 1) || avail * 5 <= total )); then seat_color="$YELLOW"
   fi
   if (( ${err_seats:-0} > 0 )); then
     err_tag=" ${RED}!${err_seats}${RST}"
   fi
-  DEVIN_PILL_OUT="${BLUE}Devin: ${RST}${c1}${u1}%${RST}${BLUE} ${cd1} | ${RST}${c7}${u7}%${RST}${BLUE} ${cd7} (${RST}${seat_color}${avail}/${total}${RST}${err_tag}${BLUE})${RST}"
+
+  local seat_part="(${RST}${seat_color}${avail}/${total}${RST}${err_tag}${BLUE})"
+  if [[ "$mode" == "mixed" ]]; then
+    if [[ -n "$u1" ]]; then
+      quota_pct_color_var c1 "$u1"
+      if [[ -n "$r1" ]]; then
+        fmt_glm_countdown_var cd1 "$(( r1 * 1000 ))"
+        part1="${BLUE}T ${RST}${c1}${u1}%${RST}${BLUE} ${cd1}"
+      else
+        part1="${BLUE}T ${RST}${c1}${u1}%${RST}${BLUE}"
+      fi
+    else
+      part1="${BLUE}T ${RST}${GRAY}?${RST}${BLUE}"
+    fi
+    if [[ -n "$u7" ]]; then
+      quota_pct_color_var c7 "$u7"
+      if [[ -n "$r7" ]]; then
+        fmt_glm_countdown_var cd7 "$(( r7 * 1000 ))"
+        part2="${BLUE}M ${RST}${c7}${u7}%${RST}${BLUE} ${cd7}"
+      else
+        part2="${BLUE}M ${RST}${c7}${u7}%${RST}${BLUE}"
+      fi
+    else
+      part2="${BLUE}M ${RST}${GRAY}?${RST}${BLUE}"
+    fi
+    DEVIN_PILL_OUT="${BLUE}Devin: ${RST}${part1} | ${RST}${part2} ${seat_part}${RST}"
+  elif [[ "$mode" == "max" ]]; then
+    quota_pct_color_var c7 "$u7"
+    if [[ -n "$r7" ]]; then
+      fmt_glm_countdown_var cd7 "$(( r7 * 1000 ))"
+      part2="${c7}${u7}%${RST}${BLUE} ${cd7}"
+    else
+      part2="${c7}${u7}%${RST}${BLUE}"
+    fi
+    DEVIN_PILL_OUT="${BLUE}Devin: ${RST}${part2} ${seat_part}${RST}"
+  else
+    if [[ -n "$u1" ]]; then
+      quota_pct_color_var c1 "$u1"
+      if [[ -n "$r1" ]]; then
+        fmt_glm_countdown_var cd1 "$(( r1 * 1000 ))"
+        part1="${c1}${u1}%${RST}${BLUE} ${cd1}"
+      else
+        part1="${c1}${u1}%${RST}${BLUE}"
+      fi
+    else
+      part1="${GRAY}?${RST}${BLUE}"
+    fi
+    if [[ -n "$u7" ]]; then
+      quota_pct_color_var c7 "$u7"
+      if [[ -n "$r7" ]]; then
+        fmt_glm_countdown_var cd7 "$(( r7 * 1000 ))"
+        part2="${c7}${u7}%${RST}${BLUE} ${cd7}"
+      else
+        part2="${c7}${u7}%${RST}${BLUE}"
+      fi
+    else
+      part2="${GRAY}?${RST}${BLUE}"
+    fi
+    DEVIN_PILL_OUT="${BLUE}Devin: ${RST}${part1} | ${RST}${part2} ${seat_part}${RST}"
+  fi
   printf '%s' "$DEVIN_PILL_OUT"
 }
 
@@ -1758,6 +1846,11 @@ if [[ -d "$herdr_app_dir" || "$herdr_hc_local" == "1" ]]; then
       *) claude_sub=0 ;;
     esac
   fi
+  auto_mode=false
+  if [[ "${HERDR_GLOBAL_ONLY:-0}" != "1" && "${HC_TERMINAL_ID:-}" =~ ^[A-Za-z0-9_/-]{1,72}$ ]]; then
+    auto_mode=$(python3 -IB "$SCRIPT_DIR/../auto-mode/mode.py" status 2>/dev/null |
+      jq -r '.enabled == true' 2>/dev/null) || auto_mode=false
+  fi
   {
     for _ln in 1 2 3; do
       eval "_bgs=( \${S${_ln}_BG[@]+\"\${S${_ln}_BG[@]}\"} ) ; _txs=( \${S${_ln}_TX[@]+\"\${S${_ln}_TX[@]}\"} )"
@@ -1769,7 +1862,7 @@ if [[ -d "$herdr_app_dir" || "$herdr_hc_local" == "1" ]]; then
   } | perl -CSDA -MJSON::PP -MTime::Local=timegm -e '
     use strict;
     use warnings;
-    my ($out_dir, $term, $sid, $cwd, $now, $default_fg_spec, $claude_sub_flag, $cache_idle_ts, $skills_json, $tp_path, $global_only) = @ARGV;
+    my ($out_dir, $term, $sid, $cwd, $now, $default_fg_spec, $claude_sub_flag, $cache_idle_ts, $skills_json, $tp_path, $global_only, $auto_mode) = @ARGV;
     sub parse_iso {
       my ($s) = @_;
       return 0 unless defined($s) && $s =~ /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})/;
@@ -1942,12 +2035,23 @@ if [[ -d "$herdr_app_dir" || "$herdr_hc_local" == "1" ]]; then
       write_atomic("$out_dir/$safe.json", {
         terminal => $term,
         session_id => $sid,
+        auto_mode => ($auto_mode eq "true" ? JSON::PP::true : JSON::PP::false),
         cwd => $cwd,
         updated_at => int($now),
         cache_idle_ts => ($cache_idle_ts && $cache_idle_ts =~ /^\d+$/ ? int($cache_idle_ts) : 0),
         claude_sub => ($claude_sub_flag ? JSON::PP::true : JSON::PP::false),
         skills => $skills_arr,
         subagents => $subagents_arr,
+        # CC hands its env to the statusline, including what cc-pick exported and /pick set mid-session.
+        pick => {
+          source => $ENV{CC_PICK_SOURCE} // "",
+          main => $ENV{ANTHROPIC_MODEL} // "",
+          fable => $ENV{ANTHROPIC_DEFAULT_FABLE_MODEL} // "",
+          opus => $ENV{ANTHROPIC_DEFAULT_OPUS_MODEL} // "",
+          sonnet => $ENV{ANTHROPIC_DEFAULT_SONNET_MODEL} // "",
+          haiku => $ENV{ANTHROPIC_DEFAULT_HAIKU_MODEL} // "",
+          subagent => $ENV{CLAUDE_CODE_SUBAGENT_MODEL} // "",
+        },
         lines => \@lines,
       });
     } elsif (defined($global_only) && $global_only eq "1" && (!defined($term) || $term eq "")) {
@@ -1957,7 +2061,7 @@ if [[ -d "$herdr_app_dir" || "$herdr_hc_local" == "1" ]]; then
         sys => \@sys,
       });
     }
-  ' "$herdr_status_dir" "${HC_TERMINAL_ID:-}" "$session_id" "$cwd" "$NOW_SEC_RENDER" "$VL_FG_TEXT" "$claude_sub" "${idle_ts:-0}" "${skills_json:-[]}" "${transcript_path:-}" "${HERDR_GLOBAL_ONLY:-0}" 2>/dev/null || true
+  ' "$herdr_status_dir" "${HC_TERMINAL_ID:-}" "$session_id" "$cwd" "$NOW_SEC_RENDER" "$VL_FG_TEXT" "$claude_sub" "${idle_ts:-0}" "${skills_json:-[]}" "${transcript_path:-}" "${HERDR_GLOBAL_ONLY:-0}" "$auto_mode" 2>/dev/null || true
 fi
 # ----- end Herdr.app bridge -----
 
