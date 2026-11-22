@@ -16,8 +16,8 @@ WT_BAR_EMPTY="▱"
 PANEL_BAR_WIDTH=10
 PANEL_MIN_TITLE=24  # below this the whole panel drops its context bars to give titles room
 
-WT_CONF="${CC_WIDGETS_CONF:-$HOME/.claude/cc-widgets-theme.conf}"
-[[ -f "$WT_CONF" ]] && . "$WT_CONF"
+WT_CONF="${CC_WIDGETS_CONF:-${HOME:-}/.claude/cc-widgets-theme.conf}"
+[[ -n "${HOME:-}${CC_WIDGETS_CONF:-}" && -f "$WT_CONF" ]] && . "$WT_CONF"
 for _td in "$SCRIPT_DIR/themes" "$SCRIPT_DIR/../themes"; do
   if [[ -f "$_td/$WT_THEME.conf" ]]; then . "$_td/$WT_THEME.conf"; break; fi
 done

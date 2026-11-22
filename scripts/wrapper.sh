@@ -3,7 +3,7 @@
 # Invoked by CC as statusLine.command. Reads stdin JSON, renders 3 lines.
 set -uo pipefail
 
-CACHE_DIR=/tmp/cc-widget-cache
+CACHE_DIR="${CC_WIDGET_CACHE_DIR:-/tmp/cc-widget-cache}"
 mkdir -p "$CACHE_DIR" 2>/dev/null
 
 CYAN=$'\033[38;5;30m'
@@ -263,7 +263,8 @@ probe_cols() {
   local pid=$$ i tty="" tty_ts=0 size="" _rows tty_memo="$CACHE_DIR/tty-${PPID:-0}.memo"
   if [[ -f "$tty_memo" ]]; then
     read -r tty_ts tty < "$tty_memo" 2>/dev/null || true
-    if (( NOW_SEC_RENDER - ${tty_ts:-0} < 60 )) && [[ -n "$tty" && -e "/dev/$tty" ]]; then
+    [[ "${tty_ts:-}" =~ ^[0-9]+$ ]] || tty_ts=0
+    if (( NOW_SEC_RENDER >= tty_ts && NOW_SEC_RENDER - tty_ts < 60 )) && [[ -n "$tty" && -e "/dev/$tty" ]]; then
       read -r _rows size < <(stty size < "/dev/$tty" 2>/dev/null) || true
       [[ -n "${size:-}" && "$size" -gt 0 ]] 2>/dev/null && { printf '%s' "$size"; return; }
     fi
@@ -392,19 +393,22 @@ fit_and_print_lines() {
 runaway=$(cat "$CACHE_DIR/runaway.txt" 2>/dev/null || printf '')
 
 # ----- Line 1 (batch parse stdin JSON in a single jq invocation) -----
-_in_fields=$(jq -r '[
-  (try (.model.display_name // (if (.model | type) == "string" then .model else "?" end)) catch "?"),
-  (try (.model.id // (if (.model | type) == "string" then .model else "" end)) catch ""),
-  (try (.effort.level // "") catch ""),
-  (try (.transcript_path // "") catch ""),
-  (try (.cost.total_cost_usd // 0) catch 0),
-  (try (.workspace.current_dir // .cwd // "") catch ""),
-  (try (.session_id // "") catch ""),
-  (try (.context_window.used_percentage // 0) catch 0),
-  (try (.context_window.context_window_size // 0) catch 0),
-  (try ((.context_window.current_usage.input_tokens // 0) + (.context_window.current_usage.cache_creation_input_tokens // 0) + (.context_window.current_usage.cache_read_input_tokens // 0)) catch 0),
-  "END"
-] | map(tostring) | join("\u001f")' <<<"$input" 2>/dev/null) || _in_fields=""
+_in_fields=$(jq -r '
+  def clean_str: tostring | gsub("[\u0000-\u001f\u007f]"; "");
+  def num_or_zero: if type == "number" and isfinite then . else 0 end;
+  [
+    (try ((.model.display_name // (if (.model | type) == "string" then .model else "?" end)) | clean_str) catch "?"),
+    (try ((.model.id // (if (.model | type) == "string" then .model else "" end)) | clean_str) catch ""),
+    (try ((.effort.level // "") | clean_str) catch ""),
+    (try ((.transcript_path // "") | clean_str) catch ""),
+    (try (.cost.total_cost_usd | num_or_zero) catch 0),
+    (try ((.workspace.current_dir // .cwd // "") | clean_str) catch ""),
+    (try ((.session_id // "") | clean_str) catch ""),
+    (try (.context_window.used_percentage | num_or_zero) catch 0),
+    (try (.context_window.context_window_size | num_or_zero | floor) catch 0),
+    (try (((.context_window.current_usage.input_tokens | num_or_zero) + (.context_window.current_usage.cache_creation_input_tokens | num_or_zero) + (.context_window.current_usage.cache_read_input_tokens | num_or_zero)) | floor) catch 0),
+    "END"
+  ] | map(tostring) | join("\u001f")' <<<"$input" 2>/dev/null) || _in_fields=""
 if [[ -n "$_in_fields" ]]; then
   IFS=$'\037' read -r model_name model_id effort_level transcript_path session_cost_usd cwd session_id ctx_used_pct ctx_size ctx_used_tokens _in_end <<<"$_in_fields"
 else
@@ -421,9 +425,14 @@ case "$model_name" in
   claude-haiku-5-5*|haiku) model_name="Haiku 5.5" ;;
 esac
 
-if [[ ( -z "$transcript_path" || ! -f "$transcript_path" ) && -n "$session_id" ]]; then
+safe_session_id=""
+if [[ "$session_id" =~ ^[A-Za-z0-9._-]+$ && "$session_id" != "." && "$session_id" != ".." ]]; then
+  safe_session_id="$session_id"
+fi
+
+if [[ ( -z "$transcript_path" || ! -f "$transcript_path" ) && -n "$safe_session_id" ]]; then
   shopt -s nullglob
-  _tp_cand=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"/*/"${session_id}.jsonl" "$HOME/.claude"*/projects/*/"${session_id}.jsonl")
+  _tp_cand=("${CLAUDE_CONFIG_DIR:-$HOME/.claude}/projects"/*/"${safe_session_id}.jsonl" "$HOME/.claude"*/projects/*/"${safe_session_id}.jsonl")
   shopt -u nullglob
   (( ${#_tp_cand[@]} > 0 )) && transcript_path="${_tp_cand[0]}"
 fi
@@ -432,7 +441,7 @@ fi
 t_stat="" ; t_mtime=0 ; t_size=0
 _tp_eff=""
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-  t_stat=$(stat -f '%m %z' "$transcript_path" 2>/dev/null)
+  t_stat=$(stat -L -f '%m %z' "$transcript_path" 2>/dev/null)
   read -r t_mtime t_size <<<"${t_stat:-0 0}"
   tp_info_memo="$CACHE_DIR/tp-info-${transcript_path##*/}.memo"
   _tp_info=""
@@ -536,8 +545,9 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
   memo_mtime=0 ; memo_size=0 ; memo_calc_ts=0 ; memo_data=""
   if [[ -n "$t_stat" && -f "$cache_memo" ]]; then
     { read -r memo_mtime memo_size memo_calc_ts; read -r memo_data; } < "$cache_memo" 2>/dev/null || true
+    [[ "${memo_calc_ts:-}" =~ ^[0-9]+$ ]] || memo_calc_ts=0
     if [[ "$memo_mtime $memo_size" == "$t_stat" ]] \
-       || (( t_size > 65536 && NOW_SEC_RENDER - ${memo_calc_ts:-0} < 10 )); then
+       || (( t_size > 65536 && NOW_SEC_RENDER >= memo_calc_ts && NOW_SEC_RENDER - memo_calc_ts < 10 )); then
       cache_data="$memo_data"
     fi
   fi
@@ -652,8 +662,9 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
   tps_data=""
   if [[ -n "$t_stat" && -f "$tps_memo" ]]; then
     { read -r tps_m_mtime tps_m_size tps_m_calc_ts; read -r memo_data; } < "$tps_memo" 2>/dev/null || true
+    [[ "${tps_m_calc_ts:-}" =~ ^[0-9]+$ ]] || tps_m_calc_ts=0
     if [[ "$tps_m_mtime $tps_m_size" == "$t_stat" ]] \
-       || (( ${t_size:-0} > 65536 && NOW_SEC_RENDER - ${tps_m_calc_ts:-0} < 10 )); then
+       || (( ${t_size:-0} > 65536 && NOW_SEC_RENDER >= tps_m_calc_ts && NOW_SEC_RENDER - tps_m_calc_ts < 10 )); then
       tps_data="$memo_data"
     fi
   fi
@@ -747,12 +758,13 @@ if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null; then
   if [[ -f .git ]]; then
     read -r _ git_dir < .git 2>/dev/null || git_dir=".git"
   fi
-  g_stat=$(stat -f '%Fm:%z' "$git_dir/HEAD" "$git_dir/index" 2>/dev/null | tr '\n' '|')
+  g_stat=$(stat -L -f '%Fm:%z' "$git_dir/HEAD" "$git_dir/index" 2>/dev/null | tr '\n' '|')
   : "${g_stat:=no-git-dir}"
   git_cached=0
   if [[ -f "$git_memo" ]]; then
     { read -r g_memo_ts g_memo_stat; read -r g_memo_cwd; IFS=$'\037' read -r git_dirty git_branch_fmt git_ab_fmt; } < "$git_memo" 2>/dev/null || true
-    if (( NOW_SEC_RENDER - ${g_memo_ts:-0} < 5 )) && [[ "$g_memo_stat" == "$g_stat" && "$g_memo_cwd" == "$cwd" ]]; then
+    [[ "${g_memo_ts:-}" =~ ^[0-9]+$ ]] || g_memo_ts=0
+    if (( NOW_SEC_RENDER >= g_memo_ts && NOW_SEC_RENDER - g_memo_ts < 5 )) && [[ "$g_memo_stat" == "$g_stat" && "$g_memo_cwd" == "$cwd" ]]; then
       git_cached=1
     else
       git_branch_fmt="⎇ no git" ; git_ab_fmt="(no git)" ; git_dirty=0
@@ -793,10 +805,14 @@ fi
 
 skill_name=""
 skills_json="[]"
-if [[ -n "$session_id" ]]; then
-  skill_name=$(cat "$CACHE_DIR/skill-${session_id}.txt" 2>/dev/null)
-  [[ -n "$model_id" && "$model_id" != "?" && "$model_id" != "<synthetic>" ]] && printf '%s' "$model_id" > "$CACHE_DIR/model-${session_id}.txt" 2>/dev/null
-  skills_memo="$CACHE_DIR/skills-widget-${session_id}.memo"
+if [[ -n "$safe_session_id" ]]; then
+  skill_name=$(cat "$CACHE_DIR/skill-${safe_session_id}.txt" 2>/dev/null)
+  if [[ -n "$model_id" && "$model_id" != "?" && "$model_id" != "<synthetic>" && -d "$CACHE_DIR" ]]; then
+    if model_tmp=$(mktemp "$CACHE_DIR/.model-${safe_session_id}.XXXXXX" 2>/dev/null); then
+      printf '%s' "$model_id" > "$model_tmp" 2>/dev/null && mv "$model_tmp" "$CACHE_DIR/model-${safe_session_id}.txt" 2>/dev/null || rm -f "$model_tmp"
+    fi
+  fi
+  skills_memo="$CACHE_DIR/skills-widget-${safe_session_id}.memo"
   tp_skills="[]"
   skills_cached=0
   if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
@@ -896,7 +912,8 @@ push_seg 1 "$WT_BG_COST" "$session_cost_fmt"
 
 # ----- Line 2: Anthropic quota + vendor balances -----
 QUOTA_CACHE_DIR="$HOME/.claude/cache"
-ACTIVE_PID=$(tr -d '[:space:]' < "$QUOTA_CACHE_DIR/vendor-active-profile" 2>/dev/null || echo "")
+ACTIVE_PID=""
+[[ -f "$QUOTA_CACHE_DIR/vendor-active-profile" ]] && ACTIVE_PID=$(tr -d '[:space:]' < "$QUOTA_CACHE_DIR/vendor-active-profile" 2>/dev/null || echo "")
 [[ "$ACTIVE_PID" =~ ^[0-9a-f]{8}$ ]] || ACTIVE_PID=""
 
 fmt_vendor_balance() {
@@ -1492,7 +1509,7 @@ fmt_devin_pool_quota() {
           ($d.avail_seats | floor | tostring),
           ($d.total_seats | floor | tostring),
           (($d.error_seats // 0) | floor | tostring),
-          (($d.balance_usd // "") | tostring),
+          (($d.balance_usd // "") | tostring | gsub("[\u0000-\u001f\u007f]"; "")),
           "END"
         ]
       | join("\u001f")
@@ -1602,24 +1619,25 @@ fmt_devin_pool_quota() {
 
 usage_part=""
 if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
-  usage_memo="$CACHE_DIR/usage-pill-${session_id:-none}.memo"
+  usage_memo="$CACHE_DIR/usage-pill-${safe_session_id:-none}.memo"
   shopt -s nullglob
   _u_files=("$QUOTA_CACHE_DIR"/quota-*.json "$QUOTA_CACHE_DIR"/quota-*.status)
   shopt -u nullglob
   u_stat="empty"
-  (( ${#_u_files[@]} > 0 )) && u_stat=$(stat -f '%Fm:%z' "${_u_files[@]}" 2>/dev/null | tr '\n' '|')
+  (( ${#_u_files[@]} > 0 )) && u_stat=$(stat -L -f '%Fm:%z' "${_u_files[@]}" 2>/dev/null | tr '\n' '|')
   : "${u_stat:=empty}"
   u_cached=0
   if [[ -f "$usage_memo" ]]; then
     { read -r u_memo_ts u_memo_stat; read -r usage_part; } < "$usage_memo" 2>/dev/null || true
-    if (( NOW_SEC_RENDER - ${u_memo_ts:-0} < 5 )) && [[ "$u_memo_stat" == "$u_stat" ]]; then
+    [[ "${u_memo_ts:-}" =~ ^[0-9]+$ ]] || u_memo_ts=0
+    if (( NOW_SEC_RENDER >= u_memo_ts && NOW_SEC_RENDER - u_memo_ts < 5 )) && [[ "$u_memo_stat" == "$u_stat" ]]; then
       u_cached=1
     else
       usage_part=""
     fi
   fi
   if (( ! u_cached )); then
-    usage_part=$(CC_SESSION_ID="$session_id" "$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
+    usage_part=$(CC_SESSION_ID="$safe_session_id" "$HOME/.claude/scripts/usage-color.sh" 2>/dev/null || echo "")
     if [[ -d "$CACHE_DIR" ]]; then
       memo_tmp=$(mktemp "$CACHE_DIR/.usage-pill.XXXXXX" 2>/dev/null) &&
         printf '%s %s\n%s\n' "$NOW_SEC_RENDER" "$u_stat" "$usage_part" > "$memo_tmp" &&
@@ -1661,7 +1679,7 @@ fi
 
 vendor_memo="$CACHE_DIR/vendor-pills.memo"
 _v_samples="${GROK_QUOTA_SAMPLES:-$HOME/.cli-proxy-api/grok-quota-samples.jsonl}"
-v_stat=$(stat -f '%Fm:%z' \
+v_stat=$(stat -L -f '%Fm:%z' \
   "$QUOTA_CACHE_DIR/vendor-codex-pool.json" \
   "$QUOTA_CACHE_DIR/vendor-codex-pool.status" \
   "$QUOTA_CACHE_DIR/vendor-codex-local.json" \
@@ -1683,7 +1701,8 @@ if [[ -f "$vendor_memo" ]]; then
       GROK_BOT_OUT GROK_BOT_USED_PCT GROK_BOT_RESET_AT \
       DEVIN_PILL_OUT DEVIN_1D_USED_PCT DEVIN_7D_USED_PCT DEVIN_AVAIL_SEATS DEVIN_TOTAL_SEATS DEVIN_BALANCE_USD _v_end
   } < "$vendor_memo" 2>/dev/null || true
-  if (( NOW_SEC_RENDER - ${v_memo_ts:-0} < 5 )) && [[ "$v_memo_stat" == "$v_stat" && "${_v_end:-}" == "END" ]]; then
+  [[ "${v_memo_ts:-}" =~ ^[0-9]+$ ]] || v_memo_ts=0
+  if (( NOW_SEC_RENDER >= v_memo_ts && NOW_SEC_RENDER - v_memo_ts < 5 )) && [[ "$v_memo_stat" == "$v_stat" && "${_v_end:-}" == "END" ]]; then
     v_cached=1
   else
     CODEX_PILL_OUT="" ; CODEX_WEEKLY_REMAINING_PCT="" ; CODEX_WEEKLY_USED_PCT="" ; CODEX_WEEKLY_RESET_AT=""
@@ -1724,6 +1743,9 @@ fi
 # ----- Line 3 -----
 # context-bar
 printf -v ctx_used_int '%.0f' "${ctx_used_pct:-0}" 2>/dev/null || ctx_used_int=0
+[[ "$ctx_used_int" =~ ^-?[0-9]+$ ]] || ctx_used_int=0
+[[ "$ctx_size" =~ ^[0-9]+$ ]] || ctx_size=0
+[[ "$ctx_used_tokens" =~ ^[0-9]+$ ]] || ctx_used_tokens=0
 if (( ctx_size > 0 )); then
   ctx_used_k=$(( ctx_used_tokens / 1000 ))
   ctx_total_k=$(( ctx_size / 1000 ))
@@ -2073,8 +2095,8 @@ fi
 intl_uuid=""
 if [[ -n "$cwd" ]]; then
   bridge_key="${CMUX_SURFACE_ID:-}"
-  if [[ -z "$bridge_key" && -n "$session_id" ]]; then
-    bridge_key="$session_id"
+  if [[ -z "$bridge_key" && -n "$safe_session_id" ]]; then
+    bridge_key="$safe_session_id"
   fi
   if [[ -z "$bridge_key" ]]; then
     bridge_key=$(printf '%s' "$cwd" | shasum -a 256 | cut -c1-12)
@@ -2109,8 +2131,13 @@ WIDGET_LOG_DIR="$HOME/.claude/projects/widget-log"
 WIDGET_LOG_LAST="$CACHE_DIR/.widget-log-last-ts"
 NOW_SEC=$(date +%s)
 LAST_SEC=$(cat "$WIDGET_LOG_LAST" 2>/dev/null || echo 0)
-if (( NOW_SEC - LAST_SEC >= 300 )); then
-  printf '%s' "$NOW_SEC" > "$WIDGET_LOG_LAST"
+[[ "$LAST_SEC" =~ ^[0-9]+$ ]] || LAST_SEC=0
+if (( NOW_SEC - LAST_SEC >= 300 || NOW_SEC < LAST_SEC )); then
+  if [[ -d "$CACHE_DIR" ]]; then
+    if wlog_tmp=$(mktemp "$CACHE_DIR/.widget-log-last-ts.XXXXXX" 2>/dev/null); then
+      printf '%s' "$NOW_SEC" > "$wlog_tmp" 2>/dev/null && mv "$wlog_tmp" "$WIDGET_LOG_LAST" 2>/dev/null || rm -f "$wlog_tmp"
+    fi
+  fi
   mkdir -p "$WIDGET_LOG_DIR" 2>/dev/null
   jq -nc \
     --arg ts          "$(date -u +%FT%TZ)" \

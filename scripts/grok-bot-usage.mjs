@@ -16,11 +16,17 @@ const ENDPOINT = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetSandUsa
 
 class Failure extends Error {}
 
-function writeAtomic(name, payload) {
-  mkdirSync(CACHE_DIR, { recursive: true });
-  const path = join(CACHE_DIR, name);
-  writeFileSync(`${path}.tmp`, JSON.stringify(payload), { mode: 0o600 });
-  renameSync(`${path}.tmp`, path);
+function writeAtomic(name, payload, cacheDir = CACHE_DIR) {
+  mkdirSync(cacheDir, { recursive: true });
+  const path = join(cacheDir, name);
+  const tmp = `${path}.tmp.${process.pid}.${crypto.randomBytes(6).toString("hex")}`;
+  try {
+    writeFileSync(tmp, JSON.stringify(payload), { flag: "wx", mode: 0o600 });
+    renameSync(tmp, path);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
 }
 
 // Electron safeStorage on macOS: "v10" + AES-128-CBC, key = PBKDF2(keychain password).
@@ -56,6 +62,26 @@ function readAccessToken() {
   }
 }
 
+export function parseUsageResponse(body) {
+  if (!body || typeof body !== "object" || Array.isArray(body)) {
+    throw new Failure("invalid-response");
+  }
+  // Heavy expired -> Free plan with zero included quota; omit the cache so the pill hides instead of faking 0%.
+  if (body.includedLimitZero === true) return null;
+  const used = body.usagePercent ?? 0;
+  if (typeof used !== "number" || !Number.isFinite(used) || used < 0 || used > 100) {
+    throw new Failure("invalid-response");
+  }
+  if (typeof body.nextResetTimestampUtc !== "string" || !body.nextResetTimestampUtc.trim()) {
+    throw new Failure("invalid-response");
+  }
+  const resetAt = Math.floor(Date.parse(body.nextResetTimestampUtc) / 1000);
+  if (!Number.isFinite(resetAt) || resetAt <= 0) {
+    throw new Failure("invalid-response");
+  }
+  return { used_percent: used, reset_at: resetAt };
+}
+
 async function fetchUsage(token) {
   let res;
   try {
@@ -71,34 +97,41 @@ async function fetchUsage(token) {
   }
   if (!res.ok) throw new Failure(`http-${res.status}`);
   const body = await res.json().catch(() => null);
-  // Heavy expired -> Free plan with zero included quota; omit the cache so the pill hides instead of faking 0%.
-  if (body?.includedLimitZero === true) return null;
-  const used = body?.usagePercent ?? 0;
-  const resetAt = Math.floor(Date.parse(body?.nextResetTimestampUtc ?? "") / 1000);
-  if (!Number.isFinite(used) || used < 0 || !Number.isFinite(resetAt) || resetAt <= 0) {
-    throw new Failure("invalid-response");
-  }
-  return { used_percent: used, reset_at: resetAt };
+  return parseUsageResponse(body);
 }
 
-// Dormant when the Grok Build sampler is parked (samples file archived/absent): skip network polling.
-if (!existsSync(SAMPLES)) {
-  rmSync(join(CACHE_DIR, "vendor-grok-bot-local.json"), { force: true });
-  rmSync(join(CACHE_DIR, "vendor-grok-bot-local.status"), { force: true });
-  process.exit(0);
+export async function runGrokBotSync({
+  cacheDir = CACHE_DIR,
+  samplesPath = SAMPLES,
+  readTokenFn = readAccessToken,
+  fetchUsageFn = fetchUsage,
+} = {}) {
+  // Dormant when the Grok Build sampler is parked (samples file archived/absent): skip network polling.
+  if (!existsSync(samplesPath)) {
+    rmSync(join(cacheDir, "vendor-grok-bot-local.json"), { force: true });
+    rmSync(join(cacheDir, "vendor-grok-bot-local.status"), { force: true });
+    return "dormant";
+  }
+
+  try {
+    const data = await fetchUsageFn(readTokenFn());
+    if (data === null) {
+      rmSync(join(cacheDir, "vendor-grok-bot-local.json"), { force: true });
+      rmSync(join(cacheDir, "vendor-grok-bot-local.status"), { force: true });
+      return "cleared";
+    }
+    writeAtomic("vendor-grok-bot-local.json", { fetched_at: Math.floor(Date.now() / 1000), data }, cacheDir);
+    rmSync(join(cacheDir, "vendor-grok-bot-local.status"), { force: true });
+    return "ok";
+  } catch (err) {
+    if (existsSync(join(cacheDir, "vendor-grok-bot-local.json"))) {
+      const reason = err instanceof Failure ? err.message : "unexpected";
+      writeAtomic("vendor-grok-bot-local.status", { failed_at: Math.floor(Date.now() / 1000), reason }, cacheDir);
+    }
+    return "error";
+  }
 }
 
-try {
-  const data = await fetchUsage(readAccessToken());
-  if (data === null) {
-    rmSync(join(CACHE_DIR, "vendor-grok-bot-local.json"), { force: true });
-    rmSync(join(CACHE_DIR, "vendor-grok-bot-local.status"), { force: true });
-  } else {
-    writeAtomic("vendor-grok-bot-local.json", { fetched_at: Math.floor(Date.now() / 1000), data });
-  }
-} catch (err) {
-  if (existsSync(join(CACHE_DIR, "vendor-grok-bot-local.json"))) {
-    const reason = err instanceof Failure ? err.message : "unexpected";
-    writeAtomic("vendor-grok-bot-local.status", { failed_at: Math.floor(Date.now() / 1000), reason });
-  }
+if (import.meta.url === `file://${process.argv[1]}`) {
+  await runGrokBotSync();
 }

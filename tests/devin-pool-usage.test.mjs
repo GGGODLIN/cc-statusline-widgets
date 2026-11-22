@@ -185,3 +185,79 @@ test("post-11/29 Max-only 7d-only mode emits null 1d fields without failing inva
   assert.equal(fullOut.avail_seats, 0);
   assert.equal(fullOut.used_7d_pct, 100);
 });
+
+test("M-CS-D01..D03: parseOffSeats handles top-level array, active-only logins, and re-enabled duplicates", () => {
+  const off = parseOffSeats([
+    { agent: "plugin:devin", user: "active@example.com · ORG", active: true },
+    { agent: "plugin:devin", user: "off@example.com · ORG" },
+    { agent: "plugin:devin", user: "dup@example.com · ORG" },
+    { agent: "plugin:devin", user: "dup@example.com · ORG", on: true },
+  ]);
+  assert.equal(off.has("plugin:devin\nactive@example.com · org"), false);
+  assert.equal(off.has("plugin:devin\noff@example.com · org"), true);
+  assert.equal(off.has("plugin:devin\ndup@example.com · org"), false);
+});
+
+test("M-CS-D04..D08: wildcard caps, sanitized balance, 7d-only max inference, held seats, and teams-first sorting", () => {
+  const caps = parseAccountCaps({
+    providers: [{ id: "devin-plugin", accountCaps: { "*": 80 } }],
+  });
+  const out = summarize(
+    [
+      maxSeat("devin-plugin", 10, "max1@example.com · TeamA"),
+      maxSeat("devin-plugin", 10, "maxheld@example.com · TeamA", { held: true }),
+      seat("devin-plugin", 10, 20, "teams1@example.com · TeamA", { balance: "$123.45\n\x07" }),
+      seat("devin-plugin", 80, 10, "teamscapped@example.com · TeamA"),
+      seat("devin-plugin", 10, 10, "teamsheld@example.com · TeamA", { held: true }),
+    ],
+    caps
+  );
+
+  assert.equal(out.balance_usd, "123.45");
+  assert.equal(out.tiers.max.total_seats, 2);
+  assert.equal(out.tiers.max.avail_seats, 1);
+  assert.equal(out.tiers.teams.total_seats, 3);
+  assert.equal(out.tiers.teams.avail_seats, 1);
+  assert.equal(out.avail_seats, 2);
+  assert.deepEqual(
+    out.accounts.map((a) => a.tier),
+    ["teams", "teams", "teams", "max", "max"]
+  );
+  assert.equal(out.accounts[2].available, false);
+  assert.equal(out.accounts[4].available, false);
+});
+
+test("CS-08: rejects non-numeric/boolean used and caps, clamps negative used >= 0", () => {
+  const caps = parseAccountCaps({
+    providers: [{ id: "devin-plugin", accountCaps: { "*": true, "a@example.com": false } }],
+  });
+  assert.equal(caps["devin-plugin"]["*"], undefined);
+  assert.equal(caps["devin-plugin"]["a@example.com"], undefined);
+
+  const negOnly = summarize([seat("devin-plugin", -20, -10, "neg@example.com · ORG")], caps);
+  assert.equal(negOnly.used_1d_pct, 0);
+  assert.equal(negOnly.used_7d_pct, 0);
+  assert.equal(negOnly.tiers.teams.used_1d_pct, 0);
+  assert.equal(negOnly.avail_seats, 1);
+
+  const out = summarize(
+    [
+      seat("devin-plugin", -20, -10, "neg@example.com · ORG"),
+      seat("devin-plugin", null, 10, "nullused@example.com · ORG"),
+      seat("devin-plugin", "", 10, "emptyused@example.com · ORG"),
+      seat("devin-plugin", false, 10, "boolused@example.com · ORG"),
+    ],
+    caps
+  );
+
+  assert.equal(out.avail_seats, 1);
+  assert.equal(out.accounts[0].used_1d_pct, 0);
+  assert.equal(out.accounts[0].used_7d_pct, 0);
+  assert.equal(out.accounts[0].available, true);
+  assert.equal(out.accounts[1].used_1d_pct, null);
+  assert.equal(out.accounts[1].available, false);
+  assert.equal(out.accounts[2].used_1d_pct, null);
+  assert.equal(out.accounts[2].available, false);
+  assert.equal(out.accounts[3].used_1d_pct, null);
+  assert.equal(out.accounts[3].available, false);
+});

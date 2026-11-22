@@ -27,7 +27,7 @@ class WrapperQuotaContractTests(unittest.TestCase):
     self.workspace.mkdir()
     self.wrapper = self.root / "wrapper.sh"
     source = WRAPPER.read_text()
-    original = "CACHE_DIR=/tmp/cc-widget-cache"
+    original = 'CACHE_DIR="${CC_WIDGET_CACHE_DIR:-/tmp/cc-widget-cache}"'
     replacement = f"CACHE_DIR={shlex.quote(str(self.widget_cache))}"
     self.assertEqual(source.count(original), 1)
     self.wrapper.write_text(source.replace(original, replacement))
@@ -731,6 +731,43 @@ class WrapperQuotaContractTests(unittest.TestCase):
     self.write_raw("vendor-codex-pool.json", "{")
     (self.cache / "vendor-codex-pool.status").unlink()
     self.assertIn("GPT: invalid cache", self.run_wrapper())
+
+  def test_past_reset_renders_zero_minutes_not_negative(self):
+    self.write_json("vendor-codex-pool.json", self.codex_pool_cache(
+      u5=None,
+      u7=25,
+      r7_in=-300,
+      avail=2,
+      total=3,
+    ))
+
+    output = self.run_wrapper()
+
+    self.assertIn("GPT: 25% 0m (2/3)", output)
+    self.assertNotIn("-", output.split("GPT:", 1)[1].split("\n", 1)[0])
+
+  def test_codex_pool_equal_timestamp_status_overrides_cache(self):
+    self.write_json("vendor-codex-pool.json", self.codex_pool_cache(fetched_at=self.now))
+    self.write_json("vendor-codex-pool.status", {"failed_at": self.now, "reason": "rate-limited"})
+
+    output = self.run_wrapper()
+
+    self.assertIn("GPT: rate-limited", output)
+    self.assertNotIn("(2/3)", output)
+
+  def test_codex_pool_twenty_percent_seat_ratio_is_yellow(self):
+    self.write_json("vendor-codex-pool.json", self.codex_pool_cache(avail=1, total=5))
+
+    raw = self.run_wrapper(strip_ansi=False)
+
+    self.assertIn("\x1b[38;5;178m1/5", raw)
+
+  def test_devin_pool_twenty_percent_seat_ratio_is_yellow(self):
+    self.write_json("vendor-devin-pool.json", self.devin_pool_cache(avail=2, total=10))
+
+    raw = self.run_wrapper(strip_ansi=False)
+
+    self.assertIn("\x1b[38;5;178m2/10", raw)
 
 
 if __name__ == "__main__":

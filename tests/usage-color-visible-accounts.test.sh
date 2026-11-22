@@ -51,7 +51,7 @@ printf '12:01:00\tstatus-only\n' > "$TMP_HOME/.claude/cache/quota-status_at_exam
 printf '12:02:00\tduplicate-status\n' > "$TMP_HOME/.claude/cache/quota-side_at_example.com.status"
 
 printf '== machine-readable visible accounts ==\n'
-JSON_OUTPUT=$(HOME="$TMP_HOME" bash "$SCRIPT" --visible-accounts-json)
+JSON_OUTPUT=$(env -u CLAUDE_CONFIG_DIR -u CC_SESSION_ID -u CC_WIDGET_CACHE_DIR HOME="$TMP_HOME" bash "$SCRIPT" --visible-accounts-json)
 if printf '%s' "$JSON_OUTPUT" | jq -e '.accounts | type == "array"' >/dev/null 2>&1; then
   ok 'output is valid JSON with an accounts array'
 else
@@ -75,9 +75,9 @@ else
 fi
 
 printf '== normal statusline output ==\n'
-NORMAL_OUTPUT=$(HOME="$TMP_HOME" bash "$SCRIPT")
+NORMAL_OUTPUT=$(env -u CLAUDE_CONFIG_DIR -u CC_SESSION_ID -u CC_WIDGET_CACHE_DIR HOME="$TMP_HOME" bash "$SCRIPT")
 PLAIN_OUTPUT=$(printf '%s' "$NORMAL_OUTPUT" | perl -pe 's/\e\[[0-9;]*m//g')
-EXPECTED_PLAIN='Team-S: 10% — | 20%  — || side: ⚠ 30% — | 40%  — || status | ⚠ status-only @ 12:01:00'
+EXPECTED_PLAIN='Team-S?: 10% — | 20% — || side: ⚠ 30% — | 40% — || status | ⚠ status-only @ 12:01:00'
 if [[ "$PLAIN_OUTPUT" == "$EXPECTED_PLAIN" ]]; then
   ok 'normal statusline rendering remains unchanged'
 else
@@ -87,16 +87,37 @@ fi
 # side 同時有 cache 與 .status：畫數字 + 帳號名旁一個 ⚠，不整格藏起來。
 # 每個帳號都是同一種完整排版，不因是否為當前 session 而縮排。
 # status 只有 .status 沒 cache：沒有數字可畫，維持整格錯誤訊息。
-if [[ "$PLAIN_OUTPUT" == *'side: ⚠ 30% — | 40%  —'* ]]; then
+if [[ "$PLAIN_OUTPUT" == *'side: ⚠ 30% — | 40% —'* ]]; then
   ok 'a failed fetch beside a usable cache degrades to a marker, not a blank pill'
 else
-  bad 'stale-status degradation' 'side: ⚠ 30% — | 40%  —' "$PLAIN_OUTPUT"
+  bad 'stale-status degradation' 'side: ⚠ 30% — | 40% —' "$PLAIN_OUTPUT"
 fi
 
 if [[ "$PLAIN_OUTPUT" == *'status | ⚠ status-only @ 12:01:00'* ]]; then
   ok 'an account with no cache at all still shows the full failure reason'
 else
   bad 'cacheless failure' 'status | ⚠ status-only @ 12:01:00' "$PLAIN_OUTPUT"
+fi
+
+printf '== confirmed session-account.json priority ==\n'
+WIDGET_CACHE="$TMP_HOME/widget-cache"
+mkdir -p "$WIDGET_CACHE"
+printf '%s\n' '{"sessions":{"sid-confirmed":{"email":"side@example.com","ts":1700000000}}}' > "$WIDGET_CACHE/session-account.json"
+CONFIRMED_JSON=$(env -u CLAUDE_CONFIG_DIR HOME="$TMP_HOME" CC_SESSION_ID="sid-confirmed" CC_WIDGET_CACHE_DIR="$WIDGET_CACHE" bash "$SCRIPT" --visible-accounts-json)
+CONFIRMED_EMAILS=$(printf '%s' "$CONFIRMED_JSON" | jq -r '.accounts | map(.email) | join(",")' 2>/dev/null)
+if [[ "$CONFIRMED_EMAILS" == 'side@example.com,software.agent@example.com,status@example.com' ]]; then
+  ok 'confirmed session-account.json places session account first'
+else
+  bad 'confirmed visible account order' 'side@example.com,software.agent@example.com,status@example.com' "$CONFIRMED_EMAILS"
+fi
+
+CONFIRMED_OUTPUT=$(env -u CLAUDE_CONFIG_DIR HOME="$TMP_HOME" CC_SESSION_ID="sid-confirmed" CC_WIDGET_CACHE_DIR="$WIDGET_CACHE" bash "$SCRIPT")
+CONFIRMED_PLAIN=$(printf '%s' "$CONFIRMED_OUTPUT" | perl -pe 's/\e\[[0-9;]*m//g')
+EXPECTED_CONFIRMED='side: ⚠ 30% — | 40% — || Team-S: 10% — | 20% — || status | ⚠ status-only @ 12:01:00'
+if [[ "$CONFIRMED_PLAIN" == "$EXPECTED_CONFIRMED" ]]; then
+  ok 'confirmed session account renders first without ? suffix'
+else
+  bad 'confirmed statusline rendering' "$EXPECTED_CONFIRMED" "$CONFIRMED_PLAIN"
 fi
 
 printf '\n== %d passed, %d failed ==\n' "$PASS" "$FAIL"

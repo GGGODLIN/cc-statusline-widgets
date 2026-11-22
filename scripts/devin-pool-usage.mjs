@@ -2,7 +2,8 @@
 // Devin pool aggregate health -> ~/.claude/cache/vendor-devin-pool.{json,status}
 // Reads live per-seat quotas from local Magpie (http://127.0.0.1:18417/v1/magpie/quotas)
 // on the daemon's 60s cycle so wrapper.sh renders with zero network wait.
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { mkdirSync, readFileSync, renameSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -20,9 +21,26 @@ class Failure extends Error {}
 function writeAtomic(name, payload) {
   mkdirSync(CACHE_DIR, { recursive: true });
   const path = join(CACHE_DIR, name);
-  const tmp = `${path}.tmp.${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(payload), { mode: 0o600 });
-  renameSync(tmp, path);
+  const tmp = `${path}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`;
+  try {
+    writeFileSync(tmp, JSON.stringify(payload), { flag: "wx", mode: 0o600 });
+    renameSync(tmp, path);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
+function parseFiniteNumber(v) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string") {
+    const trimmed = v.trim();
+    if (!trimmed) return null;
+    if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 // The headline numbers are the user's own pool only; devin-friend is a friend's pool and
@@ -77,7 +95,7 @@ function readOffSeats(path) {
 
 // Read ONLY metadata.plan and metadata.email — never read, log, or emit keys/tokens.
 export function parsePluginAuthPlans(authDoc) {
-  const plans = {};
+  const plans = Object.create(null);
   if (!authDoc || typeof authDoc !== "object" || Array.isArray(authDoc)) return plans;
   for (const [k, entry] of Object.entries(authDoc)) {
     const base = String(k).split("#")[0];
@@ -86,7 +104,7 @@ export function parsePluginAuthPlans(authDoc) {
     const email = typeof entry?.metadata?.email === "string" ? entry.metadata.email.trim().toLowerCase() : "";
     const plan = typeof entry?.metadata?.plan === "string" ? entry.metadata.plan.trim() : "";
     if (!email || !plan) continue;
-    if (!plans[provider]) plans[provider] = {};
+    if (!plans[provider]) plans[provider] = Object.create(null);
     plans[provider][email] = plan;
   }
   return plans;
@@ -96,21 +114,21 @@ function readPluginAuthPlans(path) {
   try {
     return parsePluginAuthPlans(JSON.parse(readFileSync(path, "utf8")));
   } catch {
-    return {};
+    return Object.create(null);
   }
 }
 
 export function parseAccountCaps(providersDoc) {
-  const out = {};
+  const out = Object.create(null);
   const list = Array.isArray(providersDoc?.providers) ? providersDoc.providers : [];
   for (const item of list) {
     const id = typeof item?.id === "string" ? item.id : "";
     const rawCaps = item?.accountCaps;
-    if (!id || !rawCaps || typeof rawCaps !== "object") continue;
-    const map = {};
+    if (!id || !rawCaps || typeof rawCaps !== "object" || Array.isArray(rawCaps)) continue;
+    const map = Object.create(null);
     for (const [acct, val] of Object.entries(rawCaps)) {
-      const n = Number(val);
-      if (Number.isFinite(n) && n > 0 && n <= 100) {
+      const n = parseFiniteNumber(val);
+      if (n !== null && n > 0 && n <= 100) {
         map[acct.trim().toLowerCase()] = n;
       }
     }
@@ -120,13 +138,13 @@ export function parseAccountCaps(providersDoc) {
 }
 
 export function parseAccountNames(providersDoc) {
-  const out = {};
+  const out = Object.create(null);
   const list = Array.isArray(providersDoc?.providers) ? providersDoc.providers : [];
   for (const item of list) {
     const id = typeof item?.id === "string" ? item.id : "";
     const rawNames = item?.accountNames;
-    if (!id || !rawNames || typeof rawNames !== "object") continue;
-    const map = {};
+    if (!id || !rawNames || typeof rawNames !== "object" || Array.isArray(rawNames)) continue;
+    const map = Object.create(null);
     for (const [acct, val] of Object.entries(rawNames)) {
       if (typeof val === "string" && val.trim()) {
         map[acct.trim().toLowerCase()] = val.trim();
@@ -145,14 +163,16 @@ function readProvidersExtras(path) {
       namesByProvider: parseAccountNames(doc),
     };
   } catch {
-    return { capsByProvider: {}, namesByProvider: {} };
+    return { capsByProvider: Object.create(null), namesByProvider: Object.create(null) };
   }
 }
 
 function resolveSeatCap(seatCaps, user) {
   if (!seatCaps || typeof seatCaps !== "object") return 100;
   const key = String(user ?? "").trim().toLowerCase();
-  return seatCaps[key] ?? seatCaps["*"] ?? 100;
+  if (Object.hasOwn(seatCaps, key)) return seatCaps[key];
+  if (Object.hasOwn(seatCaps, "*")) return seatCaps["*"];
+  return 100;
 }
 
 function sanitizeLabel(text) {
@@ -224,25 +244,27 @@ function aggregate(rows, seatCaps = {}, plansMap = {}, namesMap = {}) {
     const user = String(row?.user ?? "");
     const userKey = user.trim().toLowerCase();
     const rowPlan = typeof row?.plan === "string" && row.plan.trim() ? row.plan.trim() : null;
-    const plan = rowPlan ?? plansMap[userKey] ?? null;
+    const plan = rowPlan ?? (Object.hasOwn(plansMap, userKey) ? plansMap[userKey] : null);
     const rowAlias = typeof row?.alias === "string" && row.alias.trim() ? row.alias.trim() : null;
-    const alias = rowAlias ?? namesMap[userKey] ?? null;
+    const alias = rowAlias ?? (Object.hasOwn(namesMap, userKey) ? namesMap[userKey] : null);
     const baseLabel = shortLabel(user, alias);
     const until = typeof row?.until === "string" && row.until.trim() ? row.until.trim() : null;
     const error = row?.error ? String(row.error) : null;
     const held = Boolean(row?.held);
 
     if (!error && !balanceUsd && typeof row?.balance === "string" && row.balance.startsWith("$")) {
-      balanceUsd = row.balance.slice(1);
+      balanceUsd = sanitizeLabel(row.balance.slice(1)).trim();
     }
 
     const wins = Array.isArray(row?.windows) ? row.windows : [];
     const w1 = wins.find((w) => w?.name === "1 day");
     const w7 = wins.find((w) => w?.name === "7 days");
-    const u1 = Number(w1?.used);
-    const u7 = Number(w7?.used);
-    const hasW1 = Boolean(w1) && Number.isFinite(u1);
-    const hasW7 = Boolean(w7) && Number.isFinite(u7);
+    const rawU1 = parseFiniteNumber(w1?.used);
+    const rawU7 = parseFiniteNumber(w7?.used);
+    const hasW1 = Boolean(w1) && rawU1 !== null;
+    const hasW7 = Boolean(w7) && rawU7 !== null;
+    const u1 = hasW1 ? Math.min(100, Math.max(0, rawU1)) : NaN;
+    const u7 = hasW7 ? Math.min(100, Math.max(0, rawU7)) : NaN;
 
     const isMax = (plan !== null && /max/i.test(plan)) || (!w1 && Boolean(w7));
     const tier = isMax ? "max" : "teams";
@@ -432,9 +454,10 @@ async function fetchPoolHealth() {
   }
   if (!res.ok) throw new Failure(`http-${res.status}`);
   const body = await res.json().catch(() => null);
+  if (!Array.isArray(body?.data)) throw new Failure("invalid-response");
   const { capsByProvider, namesByProvider } = readProvidersExtras(PROVIDERS_PATH);
   return summarize(
-    body?.data,
+    body.data,
     capsByProvider,
     readOffSeats(LOGINS_PATH),
     readPluginAuthPlans(PLUGIN_AUTH_PATH),

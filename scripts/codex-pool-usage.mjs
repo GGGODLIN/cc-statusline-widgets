@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Codex/GPT pool active-account & seat health -> ~/.claude/cache/vendor-codex-pool.{json,status}
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -14,9 +15,26 @@ class Failure extends Error {}
 function writeAtomic(name, payload) {
   mkdirSync(CACHE_DIR, { recursive: true });
   const path = join(CACHE_DIR, name);
-  const tmp = `${path}.tmp.${process.pid}`;
-  writeFileSync(tmp, JSON.stringify(payload), { mode: 0o600 });
-  renameSync(tmp, path);
+  const tmp = `${path}.tmp.${process.pid}.${randomBytes(6).toString("hex")}`;
+  try {
+    writeFileSync(tmp, JSON.stringify(payload), { flag: "wx", mode: 0o600 });
+    renameSync(tmp, path);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+}
+
+function parseFiniteNumber(v) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  if (typeof v === "string") {
+    const trimmed = v.trim();
+    if (!trimmed) return null;
+    if (!/^[+-]?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }
 
 function sanitizeLabel(text) {
@@ -74,10 +92,31 @@ function parseTimestampMs(val) {
 function parseBalanceNumber(balance) {
   if (typeof balance === "number") return Number.isFinite(balance) ? balance : null;
   if (typeof balance !== "string") return null;
-  const m = balance.match(/[-+]?(?:\d+\.?\d*|\.\d+)/);
-  if (!m) return null;
-  const n = Number(m[0]);
-  return Number.isFinite(n) ? n : null;
+  const s = balance.trim();
+  if (!s) return null;
+
+  let m = s.match(/^\(\s*\$?\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)\s*(?:credits?|usd)?\s*\)$/i);
+  if (m) {
+    const n = Number(m[1].replace(/,/g, ""));
+    return Number.isFinite(n) ? -n : null;
+  }
+
+  m = s.match(/^([+-]?)\s*\$\s*([+-]?)\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)(?:\s*(?:credits?|usd))?$/i);
+  if (m) {
+    if (m[1] && m[2]) return null;
+    const sign = (m[1] || m[2]) === "-" ? -1 : 1;
+    const n = Number(m[3].replace(/,/g, ""));
+    return Number.isFinite(n) ? sign * n : null;
+  }
+
+  m = s.match(/^([+-]?)\s*((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?|\.\d+)(?:\s+(?:credits?|usd))?$/i);
+  if (m) {
+    const sign = m[1] === "-" ? -1 : 1;
+    const n = Number(m[2].replace(/,/g, ""));
+    return Number.isFinite(n) ? sign * n : null;
+  }
+
+  return null;
 }
 
 function parseWindow(windows, name, nowMs) {
@@ -88,8 +127,9 @@ function parseWindow(windows, name, nowMs) {
     return { used: 0, resetAt: null };
   }
   const resetAt = resetMs !== null ? Math.floor(resetMs / 1000) : null;
-  if (win.used !== null && win.used !== undefined && Number.isFinite(Number(win.used))) {
-    const used = Math.min(100, Math.max(0, Math.round(Number(win.used))));
+  const usedNum = parseFiniteNumber(win.used);
+  if (usedNum !== null) {
+    const used = Math.min(100, Math.max(0, Math.round(usedNum)));
     return { used, resetAt };
   }
   return { used: null, resetAt };
@@ -136,8 +176,8 @@ export function parseOffCodexSeats(rawLogins) {
 }
 
 function normalizeMap(obj, coerce) {
-  const out = {};
-  if (!obj || typeof obj !== "object") return out;
+  const out = Object.create(null);
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return out;
   for (const [k, v] of Object.entries(obj)) {
     const key = String(k).trim().toLowerCase();
     if (!key) continue;
@@ -152,8 +192,8 @@ export function summarizeCodexPool(rows, opts = {}) {
   const nowSec = Math.floor(nowMs / 1000);
   const source = typeof opts.source === "string" && opts.source ? opts.source : "http";
   const accountCaps = normalizeMap(opts.accountCaps, (v) => {
-    const n = Number(v);
-    return Number.isFinite(n) && n > 0 && n <= 100 ? n : undefined;
+    const n = parseFiniteNumber(v);
+    return n !== null && n > 0 && n <= 100 ? n : undefined;
   });
   const accountNames = normalizeMap(opts.accountNames, (v) =>
     typeof v === "string" && v.trim() ? v.trim() : undefined
@@ -361,9 +401,13 @@ function readCodexConfigExtras(configDir) {
 }
 
 function lookupQuotaEntry(quotasDoc, prefix, user) {
+  if (!quotasDoc || typeof quotasDoc !== "object") return undefined;
   const raw = String(user ?? "");
-  const lower = raw.toLowerCase();
-  return quotasDoc[`${prefix}/${lower}`] ?? quotasDoc[`${prefix}/${raw}`];
+  const lowerKey = `${prefix}/${raw.toLowerCase()}`;
+  if (Object.hasOwn(quotasDoc, lowerKey)) return quotasDoc[lowerKey];
+  const rawKey = `${prefix}/${raw}`;
+  if (Object.hasOwn(quotasDoc, rawKey)) return quotasDoc[rawKey];
+  return undefined;
 }
 
 function loginOrderRank(order) {
@@ -382,7 +426,7 @@ function readOfflineMirror(configDir, nowMs = Date.now()) {
   if (!loginList) return null;
 
   // Pick only routing metadata — never touch login tokens.
-  const enabledLogins = loginList
+  const sortedLogins = loginList
     .map((entry, idx) => ({
       agent: entry?.agent,
       user: entry?.user,
@@ -398,6 +442,15 @@ function readOfflineMirror(configDir, nowMs = Date.now()) {
         (l.agent === "codex" || l.agent === "plugin:codex-free")
     )
     .sort((a, b) => (loginOrderRank(a.order) - loginOrderRank(b.order)) || (a.idx - b.idx));
+
+  const seenSeats = new Set();
+  const enabledLogins = [];
+  for (const login of sortedLogins) {
+    const key = codexSeatKey(login.agent, login.user);
+    if (seenSeats.has(key)) continue;
+    seenSeats.add(key);
+    enabledLogins.push(login);
+  }
 
   const codexLogins = enabledLogins.filter((l) => l.agent === "codex");
   if (codexLogins.length === 0) throw new Failure("no-seats");
@@ -417,7 +470,8 @@ function readOfflineMirror(configDir, nowMs = Date.now()) {
     throw new Failure("stale-mirror");
   }
 
-  const servedDoc = readJsonSafe(join(configDir, "served.json")) ?? {};
+  const rawServed = readJsonSafe(join(configDir, "served.json"));
+  const servedDoc = rawServed && typeof rawServed === "object" && !Array.isArray(rawServed) ? rawServed : {};
   const rows = [];
   for (const login of enabledLogins) {
     const entry =
@@ -427,12 +481,14 @@ function readOfflineMirror(configDir, nowMs = Date.now()) {
           lookupQuotaEntry(quotasDoc, "codex-free", login.user);
     const quota = entry?.quota;
     const provider = login.agent === "codex" ? "codex" : quota?.provider ?? "codex-free";
+    const servedKey = `codex@${login.user.toLowerCase()}`;
     const lastServedAt =
       login.agent === "codex"
-        ? servedDoc[`codex@${login.user.toLowerCase()}`] ?? quota?.lastServedAt ?? null
+        ? (Object.hasOwn(servedDoc, servedKey) ? servedDoc[servedKey] : undefined) ?? quota?.lastServedAt ?? null
         : null;
     if (quota && typeof quota === "object") {
-      rows.push({ ...quota, provider, user: quota.user ?? login.user, lastServedAt });
+      const resolvedUser = typeof quota.user === "string" && quota.user.trim() ? quota.user : login.user;
+      rows.push({ ...quota, provider, user: resolvedUser, lastServedAt });
     } else {
       rows.push({ provider, user: login.user, windows: [], lastServedAt });
     }

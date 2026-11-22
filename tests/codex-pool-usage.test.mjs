@@ -4,7 +4,7 @@ import http from "node:http";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { collectCodexPool, shortLabel, summarizeCodexPool } from "../scripts/codex-pool-usage.mjs";
+import { collectCodexPool, parseOffCodexSeats, shortLabel, summarizeCodexPool } from "../scripts/codex-pool-usage.mjs";
 
 const NOW_MS = Date.parse("2026-11-17T10:00:00Z");
 const NOW_SEC = Math.floor(NOW_MS / 1000);
@@ -393,6 +393,187 @@ test("collectCodexPool uses HTTP primary and falls back to offline mirror files 
         }),
       /stale-mirror/
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("M-CS-C01..C03: parseOffCodexSeats drops lapsed/hidden, accepts active-only, and keeps re-enabled duplicate", () => {
+  const off = parseOffCodexSeats({
+    logins: [
+      { agent: "codex", user: "lapsed@example.com", on: true, lapsed: true },
+      { agent: "codex", user: "hidden@example.com", active: true, hidden: true },
+      { agent: "codex", user: "activeonly@example.com", active: true },
+      { agent: "codex", user: "none@example.com" },
+      { agent: "codex", user: "dup@example.com" },
+      { agent: "codex", user: "dup@example.com", on: true },
+    ],
+  });
+  assert.equal(off.has("codex\nlapsed@example.com"), true);
+  assert.equal(off.has("codex\nhidden@example.com"), true);
+  assert.equal(off.has("codex\nactiveonly@example.com"), false);
+  assert.equal(off.has("codex\nnone@example.com"), true);
+  assert.equal(off.has("codex\ndup@example.com"), false);
+});
+
+test("M-CS-C04..C08: wildcard accountCaps, held seats, snake_case last_served_at, free_pool held, and row.alias priority", () => {
+  const out = summarizeCodexPool(
+    [
+      {
+        provider: "codex",
+        user: "held@example.com",
+        plan: "plus",
+        held: true,
+        last_served_at: "2026-11-17T09:59:00Z",
+        windows: [{ name: "7 days", used: 10, resetsAt: FUT_7D }],
+      },
+      {
+        provider: "codex",
+        user: "heldcredits@example.com",
+        plan: "plus",
+        held: true,
+        balance: "$50.00",
+        windows: [{ name: "7 days", used: 100, resetsAt: FUT_7D }],
+      },
+      {
+        provider: "codex",
+        user: "capped@example.com",
+        plan: "plus",
+        windows: [{ name: "7 days", used: 80, resetsAt: FUT_7D }],
+      },
+      {
+        provider: "codex",
+        user: "alpha@example.com",
+        alias: "Row Alias",
+        plan: "promax",
+        last_served_at: "2026-11-17T09:40:00Z",
+        windows: [{ name: "7 days", used: 79, resetsAt: FUT_7D }],
+      },
+      {
+        provider: "codex-free",
+        user: "freeheld@example.com",
+        held: true,
+        windows: [{ name: "30 days", used: 5, resetsAt: "2026-11-25T10:00:00Z" }],
+      },
+      {
+        provider: "plugin:codex-free",
+        user: "freeok@example.com",
+        windows: [{ name: "30 days", used: 15, resetsAt: "2026-11-26T10:00:00Z" }],
+      },
+    ],
+    {
+      nowMs: NOW_MS,
+      accountCaps: { "*": 80 },
+      accountNames: { "alpha@example.com": "Config Alias" },
+    }
+  );
+
+  assert.equal(out.avail_seats, 1);
+  assert.equal(out.accounts[0].usable, false);
+  assert.equal(out.accounts[1].usable, false);
+  assert.equal(out.accounts[1].using_credits, false);
+  assert.equal(out.accounts[2].usable, false);
+  assert.equal(out.active.user, "alpha@example.com");
+  assert.equal(out.active.alias, "Row Alias");
+  assert.equal(out.active.short_label, "Row Alias");
+  assert.equal(out.active.last_served_at, Math.floor(Date.parse("2026-11-17T09:40:00Z") / 1000));
+  assert.equal(out.free_pool.total_seats, 2);
+  assert.equal(out.free_pool.avail_seats, 1);
+});
+
+test("CS-09: strict balance/window/cap parsing and offline mirror login dedup", async () => {
+  const out = summarizeCodexPool(
+    [
+      {
+        provider: "codex",
+        user: "neg1@example.com",
+        balance: "-$50.00",
+        windows: [{ name: "7 days", used: 100, resetsAt: FUT_7D }],
+      },
+      {
+        provider: "codex",
+        user: "neg2@example.com",
+        balance: "- $50",
+        windows: [{ name: "7 days", used: 100, resetsAt: FUT_7D }],
+      },
+      {
+        provider: "codex",
+        user: "neg3@example.com",
+        balance: "($50.00)",
+        windows: [{ name: "7 days", used: 100, resetsAt: FUT_7D }],
+      },
+      {
+        provider: "codex",
+        user: "notext@example.com",
+        balance: "No credits (tier 1)",
+        windows: [{ name: "7 days", used: 100, resetsAt: FUT_7D }],
+      },
+      {
+        provider: "codex",
+        user: "comma@example.com",
+        balance: "$1,250.50",
+        windows: [{ name: "7 days", used: 100, resetsAt: FUT_7D }],
+      },
+      {
+        provider: "codex",
+        user: "badwin1@example.com",
+        windows: [{ name: "7 days", used: "", resetsAt: FUT_7D }],
+      },
+      {
+        provider: "codex",
+        user: "badwin2@example.com",
+        windows: [{ name: "7 days", used: false, resetsAt: FUT_7D }],
+      },
+    ],
+    {
+      nowMs: NOW_MS,
+      accountCaps: { "*": true, "badwin1@example.com": false },
+    }
+  );
+
+  assert.equal(out.accounts[0].using_credits, false);
+  assert.equal(out.accounts[1].using_credits, false);
+  assert.equal(out.accounts[2].using_credits, false);
+  assert.equal(out.accounts[3].using_credits, false);
+  assert.equal(out.accounts[4].using_credits, true);
+  assert.equal(out.accounts[4].usable, true);
+  assert.equal(out.accounts[5].used_7d_pct, null);
+  assert.equal(out.accounts[5].usable, false);
+  assert.equal(out.accounts[6].used_7d_pct, null);
+  assert.equal(out.accounts[6].usable, false);
+  assert.equal(out.avail_seats, 1);
+
+  const dir = mkdtempSync(join(tmpdir(), "codex-mirror-dedup-"));
+  try {
+    writeFileSync(
+      join(dir, "logins.json"),
+      JSON.stringify([
+        { agent: "codex", user: "dup@example.com", on: true, order: 1 },
+        { agent: "codex", user: "DUP@example.com", active: true, order: 2 },
+      ])
+    );
+    writeFileSync(
+      join(dir, "quotas.json"),
+      JSON.stringify({
+        "codex/dup@example.com": {
+          at: "2026-11-17T09:55:00Z",
+          quota: {
+            provider: "codex",
+            user: "   ",
+            readAt: "2026-11-17T09:55:00Z",
+            windows: [{ name: "7 days", used: 15, resetsAt: FUT_7D }],
+          },
+        },
+      })
+    );
+    const mirror = await collectCodexPool({
+      endpoint: "http://127.0.0.1:1/unreachable",
+      configDir: dir,
+      nowMs: NOW_MS,
+    });
+    assert.equal(mirror.source, "mirror");
+    assert.equal(mirror.total_seats, 1);
+    assert.equal(mirror.accounts[0].user, "dup@example.com");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

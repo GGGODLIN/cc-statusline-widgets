@@ -27,10 +27,12 @@ color_for() {
 }
 
 color_for_var() {
-  if (( ${2%.*} >= 100 )); then printf -v "$1" '%s' "$RED_BOLD"
-  elif (( ${2%.*} >= 80 )); then printf -v "$1" '%s' "$RED"
-  elif (( ${2%.*} >= 50 )); then printf -v "$1" '%s' "$YELLOW"
-  elif (( ${2%.*} >= 30 )); then printf -v "$1" '%s' "$BLUE"
+  local _v=${2%.*}
+  [[ "$_v" =~ ^-?[0-9]+$ ]] || printf -v _v '%.0f' "$2" 2>/dev/null || _v=0
+  if (( _v >= 100 )); then printf -v "$1" '%s' "$RED_BOLD"
+  elif (( _v >= 80 )); then printf -v "$1" '%s' "$RED"
+  elif (( _v >= 50 )); then printf -v "$1" '%s' "$YELLOW"
+  elif (( _v >= 30 )); then printf -v "$1" '%s' "$BLUE"
   else printf -v "$1" '%s' "$GREEN"
   fi
 }
@@ -101,6 +103,8 @@ render_segment() {
   if [[ -f "$status" && ! -f "$cache" ]]; then
     local ts msg
     IFS=$'\t' read -r ts msg < "$status"
+    ts=$(printf '%s' "${ts:-}" | tr -d '\r\n\000-\037\177')
+    msg=$(printf '%s' "${msg:-}" | tr -d '\r\n\000-\037\177')
     printf '%s%s | %s⚠ %s @ %s%s' "$BLUE" "$name" "$RED" "$msg" "$ts" "$RST"
     return
   fi
@@ -109,14 +113,17 @@ render_segment() {
   local q_fields wu wr_at su sr_at fu _q_end
   # 缺欄位畫成 ?：補 0 會讓「沒有資料」看起來像「額度完全沒用」
   # 5 個槽位一律用 // "" 保留位置，避免 jq empty 吞掉中間槽位造成欄位錯位
-  q_fields=$(jq -r '[
-    (.data.seven_day.utilization // ""),
-    (.data.seven_day.resets_at // ""),
-    (.data.five_hour.utilization // ""),
-    (.data.five_hour.resets_at // ""),
-    ([.data.limits[]? | select(.kind == "weekly_scoped") | .percent] | max // ""),
-    "END"
-  ] | map(tostring) | join("\u001f")' "$cache" 2>/dev/null) || q_fields=""
+  q_fields=$(jq -r '
+    def num_or_empty: if type == "number" and isfinite then . else "" end;
+    def str_clean: if type == "string" then gsub("[\u0000-\u001f\u007f]"; "") else "" end;
+    [
+      (.data.seven_day.utilization | num_or_empty),
+      (.data.seven_day.resets_at | str_clean),
+      (.data.five_hour.utilization | num_or_empty),
+      (.data.five_hour.resets_at | str_clean),
+      ([.data.limits[]? | select(.kind == "weekly_scoped") | .percent | select(type == "number" and isfinite)] | max // ""),
+      "END"
+    ] | map(tostring) | join("\u001f")' "$cache" 2>/dev/null) || q_fields=""
   IFS=$'\037' read -r wu wr_at su sr_at fu _q_end <<<"$q_fields"
   local wc sc fc wu_fmt su_fmt wu_disp su_disp fu_fmt weekly_part
   if [[ -n "$wu" ]]; then
@@ -138,9 +145,10 @@ render_segment() {
     fi
   fi
   local mtime now age age_str age_tag=""
-  mtime=$(stat -f %m "$cache" 2>/dev/null) || mtime=0
+  mtime=$(stat -L -f %m "$cache" 2>/dev/null) || mtime=0
   now=${NOW_SEC:-$(date +%s)}
   age=$((now - mtime))
+  (( age < 0 )) && age=0
   if (( age >= OLD_AFTER_SECONDS )); then
     fmt_age_var age_str "$age"
     age_tag=" ${YELLOW}[${age_str} old]${BLUE}"
