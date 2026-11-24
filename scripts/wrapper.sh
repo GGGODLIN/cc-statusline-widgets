@@ -1486,11 +1486,15 @@ fmt_devin_pool_quota() {
       | (if $mode == "mixed" or $mode == "teams" then
            (if ($t | type) == "object" and ($t.teams | type) == "object" then $t.teams.reset_1d_at else $d.reset_1d_at end)
          else null end) as $r1
-      | (if $mode == "mixed" or $mode == "max" then
+      | (if $mode == "mixed" then
+           $d.used_7d_pct
+         elif $mode == "max" then
            (if ($t | type) == "object" and ($t.max | type) == "object" then $t.max.used_7d_pct else $d.used_7d_pct end)
          elif ($t | type) == "object" and ($t.teams | type) == "object" then $t.teams.used_7d_pct
          else $d.used_7d_pct end) as $u7
-      | (if $mode == "mixed" or $mode == "max" then
+      | (if $mode == "mixed" then
+           $d.reset_7d_at
+         elif $mode == "max" then
            (if ($t | type) == "object" and ($t.max | type) == "object" then $t.max.reset_7d_at else $d.reset_7d_at end)
          elif ($t | type) == "object" and ($t.teams | type) == "object" then $t.teams.reset_7d_at
          else $d.reset_7d_at end) as $r7
@@ -1556,37 +1560,17 @@ fmt_devin_pool_quota() {
   fi
 
   local seat_part="(${RST}${seat_color}${avail}/${total}${RST}${err_tag}${BLUE})"
-  if [[ "$mode" == "mixed" ]]; then
-    if [[ -n "$u1" ]]; then
-      quota_pct_color_var c1 "$u1"
-      if [[ -n "$r1" ]]; then
-        fmt_glm_countdown_var cd1 "$(( r1 * 1000 ))"
-        part1="${BLUE}T ${RST}${c1}${u1}%${RST}${BLUE} ${cd1}"
-      else
-        part1="${BLUE}T ${RST}${c1}${u1}%${RST}${BLUE}"
-      fi
-    else
-      part1="${BLUE}T ${RST}${GRAY}?${RST}${BLUE}"
-    fi
+  if [[ "$mode" == "mixed" || "$mode" == "max" ]]; then
     if [[ -n "$u7" ]]; then
       quota_pct_color_var c7 "$u7"
       if [[ -n "$r7" ]]; then
         fmt_glm_countdown_var cd7 "$(( r7 * 1000 ))"
-        part2="${BLUE}M ${RST}${c7}${u7}%${RST}${BLUE} ${cd7}"
+        part2="${c7}${u7}%${RST}${BLUE} ${cd7}"
       else
-        part2="${BLUE}M ${RST}${c7}${u7}%${RST}${BLUE}"
+        part2="${c7}${u7}%${RST}${BLUE}"
       fi
     else
-      part2="${BLUE}M ${RST}${GRAY}?${RST}${BLUE}"
-    fi
-    DEVIN_PILL_OUT="${BLUE}Devin: ${RST}${part1} | ${RST}${part2} ${seat_part}${RST}"
-  elif [[ "$mode" == "max" ]]; then
-    quota_pct_color_var c7 "$u7"
-    if [[ -n "$r7" ]]; then
-      fmt_glm_countdown_var cd7 "$(( r7 * 1000 ))"
-      part2="${c7}${u7}%${RST}${BLUE} ${cd7}"
-    else
-      part2="${c7}${u7}%${RST}${BLUE}"
+      part2="${GRAY}?${RST}${BLUE}"
     fi
     DEVIN_PILL_OUT="${BLUE}Devin: ${RST}${part2} ${seat_part}${RST}"
   else

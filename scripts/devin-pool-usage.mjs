@@ -48,6 +48,8 @@ function parseFiniteNumber(v) {
 const OWN_PROVIDER = "devin-plugin";
 // Devin Teams weekly allowance is 2x daily.
 const WEEK_TO_DAY_RATIO = 2;
+// Max weekly allowance (~US$154.41) is ~5x Teams (~US$31–32), matching $200 vs $40 pricing.
+const MAX_TO_TEAMS_WEEK_WEIGHT = 5;
 
 // Magpie keeps a plugin's logins under "plugin:<plugin id>", and devin-plugin's plugin id is "devin".
 const LOGIN_AGENT = { "devin-plugin": "plugin:devin" };
@@ -387,10 +389,11 @@ function aggregate(rows, seatCaps = {}, plansMap = {}, namesMap = {}) {
 
   const used1dPct = teamsTier ? teamsTier.used_1d_pct : null;
   const reset1dAt = teamsTier ? teamsTier.reset_1d_at : null;
+  const weightedTotal = teamsTotal + maxTotal * MAX_TO_TEAMS_WEEK_WEIGHT;
   const used7dPct =
     teamsTotal === 0
       ? maxTier.used_7d_pct
-      : Math.round((sumTeamsUsed7d + sumMaxUsed7d) / totalSeats);
+      : Math.round((sumTeamsUsed7d + sumMaxUsed7d * MAX_TO_TEAMS_WEEK_WEIGHT) / weightedTotal);
 
   return {
     used_1d_pct: used1dPct,
