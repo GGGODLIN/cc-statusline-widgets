@@ -194,6 +194,49 @@ class WrapperHerdrRestoreHookTests(unittest.TestCase):
 
     self.assertIsNotNone(self.wait_for_call(record_log))
 
+  def stamp_scenario(self, prepare):
+    """(control run, scenario run, scenario record log): the same wrapper input once with a normal stamp and
+    once after `prepare(stamp_path, session_id, effort)` replaced the stamp, which is kept for the second run."""
+    control, _, control_log = self.run_wrapper(in_herdr=True, recorder=self.fake_recorder())
+    self.assertIsNotNone(self.wait_for_call(control_log), "positive control: the first refresh records")
+    stamp = self.widget_cache / "herdr-restore-t42.stamp"
+    _, sid, effort = stamp.read_text().split(" ", 2)
+    stamp.unlink()
+    prepare(stamp, sid, effort.strip())
+    result, _, record_log = self.run_wrapper(in_herdr=True, recorder=self.fake_recorder(), keep_stamp=True)
+    return control, result, record_log
+
+  def test_a_stamp_that_cannot_be_written_stays_out_of_the_statusline_stderr(self):
+    control, result, record_log = self.stamp_scenario(lambda stamp, sid, effort: stamp.mkdir())
+
+    self.assertEqual(result.stderr, control.stderr)
+    self.assertIsNotNone(self.wait_for_call(record_log), "a stamp that cannot be kept must not stop recording")
+
+  def test_a_stamp_that_cannot_be_read_stays_out_of_the_statusline_stderr(self):
+    def unreadable(stamp, sid, effort):
+      stamp.write_text(f"{int(time.time())} {sid} {effort}")
+      stamp.chmod(0)
+
+    control, result, record_log = self.stamp_scenario(unreadable)
+
+    self.assertEqual(result.stderr, control.stderr)
+    self.assertIsNotNone(self.wait_for_call(record_log))
+
+  def test_a_stamp_time_in_the_future_counts_as_expired_and_is_replaced(self):
+    control, result, record_log = self.stamp_scenario(
+      lambda stamp, sid, effort: stamp.write_text(f"{int(time.time()) + 3600} {sid} {effort}"))
+
+    self.assertIsNotNone(self.wait_for_call(record_log), "the clock moved back: record now, not in an hour")
+    self.assertLessEqual(int((self.widget_cache / "herdr-restore-t42.stamp").read_text().split()[0]), int(time.time()) + 2)
+
+  def test_a_stamp_time_with_a_leading_zero_is_read_as_decimal(self):
+    # Octal reading would make "09" an arithmetic error printed into the statusline's stderr.
+    control, result, record_log = self.stamp_scenario(
+      lambda stamp, sid, effort: stamp.write_text(f"09 {sid} {effort}"))
+
+    self.assertEqual(result.stderr, control.stderr)
+    self.assertIsNotNone(self.wait_for_call(record_log), "a stamp from 1970 is long expired")
+
 
 if __name__ == "__main__":
   unittest.main()

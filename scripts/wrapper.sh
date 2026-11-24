@@ -1860,11 +1860,16 @@ if (( herdr_mod_active )) && [[ -n "$session_id" ]]; then
   # ~67 ms each), so record once a minute unless the session or effort changed. Builtins only: no forks.
   _hr_stamp="$CACHE_DIR/herdr-restore-${HC_TERMINAL_ID//\//_}.stamp"
   _hr_last=0 ; _hr_sid="" ; _hr_eff=""
-  [[ -f "$_hr_stamp" ]] && read -r _hr_last _hr_sid _hr_eff < "$_hr_stamp" 2>/dev/null
-  [[ "$_hr_last" =~ ^[0-9]+$ ]] || _hr_last=0
-  if [[ "$_hr_sid" != "$session_id" || "$_hr_eff" != "$effort_level" ]] || (( NOW_SEC_RENDER - _hr_last >= 60 )); then
+  # `2>/dev/null` goes before the file redirection: bash applies them left to right, so a stamp that cannot
+  # be opened would otherwise print its error into the statusline's stderr.
+  [[ -f "$_hr_stamp" ]] && read -r _hr_last _hr_sid _hr_eff 2>/dev/null < "$_hr_stamp"
+  # 10#: a stamp time with a leading zero is an octal error in (( )) otherwise.
+  [[ "$_hr_last" =~ ^[0-9]+$ ]] && _hr_last=$(( 10#$_hr_last )) || _hr_last=0
+  # A stamp time ahead of now means the clock moved back; waiting out "a minute" from it could take hours.
+  if [[ "$_hr_sid" != "$session_id" || "$_hr_eff" != "$effort_level" ]] \
+      || (( _hr_last > NOW_SEC_RENDER || NOW_SEC_RENDER - _hr_last >= 60 )); then
     if command -v "$_hr_bin" >/dev/null 2>&1; then
-      printf '%s %s %s\n' "$NOW_SEC_RENDER" "$session_id" "$effort_level" > "$_hr_stamp" 2>/dev/null
+      printf '%s %s %s\n' "$NOW_SEC_RENDER" "$session_id" "$effort_level" 2>/dev/null > "$_hr_stamp"
       ( "$_hr_bin" record --terminal="$HC_TERMINAL_ID" --session="$session_id" --cwd="$cwd" \
           --effort="$effort_level" --transcript="$transcript_path" --from-pid="$PPID" \
           </dev/null >/dev/null 2>&1 & )
