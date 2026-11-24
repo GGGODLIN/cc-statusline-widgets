@@ -1856,10 +1856,19 @@ fi
 # ----- herdr-restore replay snapshot: fire and forget, so statusline latency and output never depend on it -----
 if (( herdr_mod_active )) && [[ -n "$session_id" ]]; then
   _hr_bin="${HERDR_RESTORE_BIN:-herdr-restore}"
-  if command -v "$_hr_bin" >/dev/null 2>&1; then
-    ( "$_hr_bin" record --terminal="$HC_TERMINAL_ID" --session="$session_id" --cwd="$cwd" \
-        --effort="$effort_level" --transcript="$transcript_path" --from-pid="$PPID" \
-        </dev/null >/dev/null 2>&1 & )
+  # Recording on every refresh cost about 0.4 of a CPU core with 30 sessions (2026-11-24: 6.6 records/s,
+  # ~67 ms each), so record once a minute unless the session or effort changed. Builtins only: no forks.
+  _hr_stamp="$CACHE_DIR/herdr-restore-${HC_TERMINAL_ID//\//_}.stamp"
+  _hr_last=0 ; _hr_sid="" ; _hr_eff=""
+  [[ -f "$_hr_stamp" ]] && read -r _hr_last _hr_sid _hr_eff < "$_hr_stamp" 2>/dev/null
+  [[ "$_hr_last" =~ ^[0-9]+$ ]] || _hr_last=0
+  if [[ "$_hr_sid" != "$session_id" || "$_hr_eff" != "$effort_level" ]] || (( NOW_SEC_RENDER - _hr_last >= 60 )); then
+    if command -v "$_hr_bin" >/dev/null 2>&1; then
+      printf '%s %s %s\n' "$NOW_SEC_RENDER" "$session_id" "$effort_level" > "$_hr_stamp" 2>/dev/null
+      ( "$_hr_bin" record --terminal="$HC_TERMINAL_ID" --session="$session_id" --cwd="$cwd" \
+          --effort="$effort_level" --transcript="$transcript_path" --from-pid="$PPID" \
+          </dev/null >/dev/null 2>&1 & )
+    fi
   fi
 fi
 

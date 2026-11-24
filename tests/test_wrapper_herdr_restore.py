@@ -37,11 +37,17 @@ class WrapperHerdrRestoreHookTests(unittest.TestCase):
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
     return path
 
-  def run_wrapper(self, *, in_herdr, recorder, extra_env=None):
-    """Run the wrapper once. Returns (completed process, cc-status JSON or None, recorded argv or None)."""
+  def run_wrapper(self, *, in_herdr, recorder, extra_env=None, keep_stamp=False):
+    """Run the wrapper once. Returns (completed process, cc-status JSON or None, recorded argv or None).
+
+    The once-a-minute stamp is cleared first unless keep_stamp: otherwise a "not called" assertion after
+    a positive-control run would pass because of the throttle instead of the guard it is meant to test."""
     herdr_home, sock_path = self.start_herdr_app()
     record_log = self.root / "record-argv"
     record_log.unlink(missing_ok=True)
+    if not keep_stamp:
+      for stamp in self.widget_cache.glob("herdr-restore-*.stamp"):
+        stamp.unlink()
     env = {
       **os.environ,
       "HOME": str(self.home),
@@ -154,6 +160,37 @@ class WrapperHerdrRestoreHookTests(unittest.TestCase):
 
     _, _, record_log = self.run_wrapper(in_herdr=True, recorder=self.root / "unused", extra_env={
       "HERDR_RESTORE_BIN": "", "PATH": f"{bin_dir}:{os.environ['PATH']}"})
+
+    self.assertIsNotNone(self.wait_for_call(record_log))
+
+  def test_a_repeat_within_a_minute_for_the_same_session_and_effort_is_not_recorded(self):
+    _, _, first_log = self.run_wrapper(in_herdr=True, recorder=self.fake_recorder())
+    self.assertIsNotNone(self.wait_for_call(first_log), "positive control: the first refresh records")
+
+    _, _, record_log = self.run_wrapper(in_herdr=True, recorder=self.fake_recorder(), keep_stamp=True)
+
+    self.assert_no_call(record_log)
+
+  def test_a_new_session_or_a_new_effort_is_recorded_at_once(self):
+    _, _, first_log = self.run_wrapper(in_herdr=True, recorder=self.fake_recorder())
+    self.assertIsNotNone(self.wait_for_call(first_log))
+
+    self.input["session_id"] = "another-session"
+    _, _, session_log = self.run_wrapper(in_herdr=True, recorder=self.fake_recorder(), keep_stamp=True)
+    self.assertIn("--session=another-session", self.wait_for_call(session_log) or [])
+
+    self.input["effort"] = {"level": "low"}
+    _, _, effort_log = self.run_wrapper(in_herdr=True, recorder=self.fake_recorder(), keep_stamp=True)
+    self.assertIn("--effort=low", self.wait_for_call(effort_log) or [])
+
+  def test_a_minute_after_the_last_record_it_is_recorded_again(self):
+    _, _, first_log = self.run_wrapper(in_herdr=True, recorder=self.fake_recorder())
+    self.assertIsNotNone(self.wait_for_call(first_log))
+    stamp = self.widget_cache / "herdr-restore-t42.stamp"
+    _, sid, effort = stamp.read_text().split(" ", 2)
+    stamp.write_text(f"{int(time.time()) - 61} {sid} {effort}")
+
+    _, _, record_log = self.run_wrapper(in_herdr=True, recorder=self.fake_recorder(), keep_stamp=True)
 
     self.assertIsNotNone(self.wait_for_call(record_log))
 
