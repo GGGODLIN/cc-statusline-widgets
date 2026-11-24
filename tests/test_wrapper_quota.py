@@ -473,11 +473,11 @@ class WrapperQuotaContractTests(unittest.TestCase):
     self.assertEqual(entry["devin_total_seats"], "41")
     self.assertEqual(entry["devin_balance_usd"], "15042.53")
 
-  def test_devin_pool_mixed_teams_and_max_renders_tiered_pill(self):
+  def test_devin_pool_mixed_teams_and_max_renders_compact_weighted_pool_pill(self):
     self.write_json("vendor-devin-pool.json", self.devin_pool_cache(
       u1=22,
       r1_in=5400,
-      u7=33,
+      u7=17,
       r7_in=86400 + 5 * 3600,
       avail=4,
       total=4,
@@ -503,12 +503,14 @@ class WrapperQuotaContractTests(unittest.TestCase):
 
     output = self.run_wrapper(log=True)
 
-    self.assertIn("Devin: T 22% 1h30m | M 0% 1d5h (4/4)", output)
+    self.assertIn("Devin: 17% 1d5h (4/4)", output)
+    self.assertNotIn("T 22%", output)
+    self.assertNotIn("M 0%", output)
     month = datetime.now().strftime("%Y-%m")
     log_path = self.home / ".claude" / "projects" / "widget-log" / f"{month}.jsonl"
     entry = json.loads(log_path.read_text().splitlines()[-1])
     self.assertEqual(entry["devin_1d_used_pct"], "22")
-    self.assertEqual(entry["devin_7d_used_pct"], "0")
+    self.assertEqual(entry["devin_7d_used_pct"], "17")
     self.assertEqual(entry["devin_avail_seats"], "4")
     self.assertEqual(entry["devin_total_seats"], "4")
 

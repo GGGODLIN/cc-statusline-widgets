@@ -133,10 +133,11 @@ test("mixed 3 Teams + 1 Max never penalizes Max seat and emits tier and account 
   );
 
   // Teams effRem1d = min(100,96) + min(83,184) + min(100,54) = 96 + 83 + 54 = 233 -> avg rem 77.67 -> 22% used
+  // Weighted 7d (Max 5x, Teams 1x): (52 + 8 + 73 + 0*5) / (3 + 5) = 133 / 8 = 16.625 -> 17%
   assert.equal(out.avail_seats, 4);
   assert.equal(out.total_seats, 4);
   assert.equal(out.used_1d_pct, 22);
-  assert.equal(out.used_7d_pct, 33);
+  assert.equal(out.used_7d_pct, 17);
   assert.equal(out.tiers.teams.used_1d_pct, 22);
   assert.equal(out.tiers.teams.used_7d_pct, 44);
   assert.equal(out.tiers.teams.avail_seats, 3);
@@ -196,6 +197,38 @@ test("M-CS-D01..D03: parseOffSeats handles top-level array, active-only logins, 
   assert.equal(off.has("plugin:devin\nactive@example.com · org"), false);
   assert.equal(off.has("plugin:devin\noff@example.com · org"), true);
   assert.equal(off.has("plugin:devin\ndup@example.com · org"), false);
+});
+
+test("mixed pool weights Max 5x Teams in used_7d_pct", () => {
+  const plans = parsePluginAuthPlans({
+    devin: { metadata: { email: "t@example.com · ORG", plan: "Devin Teams" } },
+    "devin#max": { metadata: { email: "m@example.com · My Team", plan: "Devin Max" } },
+  });
+  // 1 Teams at 100% + 1 Max at 0% -> (100 + 0*5) / (1 + 5) = 16.67 -> 17%
+  const teamsFull = summarize(
+    [
+      seat("devin-plugin", 100, 100, "t@example.com · ORG"),
+      maxSeat("devin-plugin", 0, "m@example.com · My Team"),
+    ],
+    {},
+    new Set(),
+    plans
+  );
+  assert.equal(teamsFull.used_7d_pct, 17);
+  assert.equal(teamsFull.tiers.teams.used_7d_pct, 100);
+  assert.equal(teamsFull.tiers.max.used_7d_pct, 0);
+
+  // 1 Teams at 0% + 1 Max at 100% -> (0 + 100*5) / (1 + 5) = 83.33 -> 83%
+  const maxFull = summarize(
+    [
+      seat("devin-plugin", 0, 0, "t@example.com · ORG"),
+      maxSeat("devin-plugin", 100, "m@example.com · My Team"),
+    ],
+    {},
+    new Set(),
+    plans
+  );
+  assert.equal(maxFull.used_7d_pct, 83);
 });
 
 test("M-CS-D04..D08: wildcard caps, sanitized balance, 7d-only max inference, held seats, and teams-first sorting", () => {
