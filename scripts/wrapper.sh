@@ -1853,6 +1853,16 @@ fi
 # preview mode: skip side effects (herdr mod bridge + i18n bridge + widget-log)
 [[ -n "${WT_NO_LOG:-}" ]] && exit 0
 
+# ----- herdr-restore replay snapshot: fire and forget, so statusline latency and output never depend on it -----
+if (( herdr_mod_active )) && [[ -n "$session_id" ]]; then
+  _hr_bin="${HERDR_RESTORE_BIN:-herdr-restore}"
+  if command -v "$_hr_bin" >/dev/null 2>&1; then
+    ( "$_hr_bin" record --terminal="$HC_TERMINAL_ID" --session="$session_id" --cwd="$cwd" \
+        --effort="$effort_level" --transcript="$transcript_path" --from-pid="$PPID" \
+        </dev/null >/dev/null 2>&1 & )
+  fi
+fi
+
 # ----- Herdr.app workspace-status mod bridge -----
 if [[ -d "$herdr_app_dir" || "$herdr_hc_local" == "1" ]]; then
   herdr_status_dir="$herdr_app_dir/data/cc-status"
