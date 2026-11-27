@@ -473,6 +473,138 @@ class ChaosHardeningTests(unittest.TestCase):
     self.assertEqual(raw_post(f"Content-Length: {len(good)}\r\n", good), 200)
     self.assertEqual(mod.load_map()["http-sid"]["email"], "http@example.com")
 
+  def test_w40_wrapper_graft_parity_and_hardening(self):
+    # M2 Fixture A: [1] non-object JSON line at line 1950 (outside last 200) -> only tps is empty, model & cache still render.
+    tp_a = self.root / "fix_a.jsonl"
+    lines_a = []
+    # Put 5 valid turns before line 1950, then [1], then 200 clean lines ending with a valid assistant usage row.
+    for i in range(5):
+      lines_a.append(json.dumps({
+        "type": "user", "timestamp": f"2026-11-26T00:0{i}:00.000Z",
+        "message": {"content": "hi"},
+      }))
+      lines_a.append(json.dumps({
+        "type": "assistant", "timestamp": f"2026-11-26T00:0{i}:05.000Z",
+        "message": {"id": f"m{i}", "model": "claude-opus-5-5",
+                    "content": [{"type": "text", "text": "ok"}],
+                    "usage": {"input_tokens": 100, "cache_read_input_tokens": 900, "output_tokens": 500}},
+      }))
+    lines_a.append("[1]")
+    for i in range(199):
+      lines_a.append(json.dumps({"type": "progress", "timestamp": "2026-11-26T00:10:00.000Z"}))
+    lines_a.append(json.dumps({
+      "type": "assistant", "timestamp": "2026-11-26T00:11:00.000Z",
+      "message": {"id": "m-last", "model": "claude-opus-5-5",
+                  "content": [{"type": "text", "text": "done"}],
+                  "usage": {"input_tokens": 100, "cache_read_input_tokens": 900, "output_tokens": 50}},
+    }))
+    tp_a.write_text("\n".join(lines_a) + "\n")
+
+    env_a = self.base_env()
+    payload_a = json.dumps({"session_id": "s-fix-a", "transcript_path": str(tp_a), "cwd": str(self.workspace)})
+    res_a = subprocess.run(
+      ["/bin/bash", str(SCRIPTS / "wrapper.sh")],
+      input=payload_a, env=env_a, capture_output=True, text=True, timeout=15,
+    )
+    self.assertEqual(res_a.returncode, 0, res_a.stderr)
+    out_a = ANSI.sub("", res_a.stdout)
+    self.assertIn("Opus 5.5", out_a)
+    self.assertIn("Cache: 90%", out_a)
+    self.assertNotIn("t/s", out_a)
+
+    # M2 Fixture B: [1] inside last 200 lines -> model fallback and cache hit both empty cleanly.
+    tp_b = self.root / "fix_b.jsonl"
+    tp_b.write_text("\n".join([
+      json.dumps({
+        "type": "assistant", "timestamp": "2026-11-26T00:11:00.000Z",
+        "message": {"id": "m-b", "model": "claude-opus-5-5",
+                    "content": [{"type": "text", "text": "done"}],
+                    "usage": {"input_tokens": 100, "cache_read_input_tokens": 900, "output_tokens": 50}},
+      }),
+      "[1]",
+    ]) + "\n")
+    payload_b = json.dumps({"session_id": "s-fix-b", "transcript_path": str(tp_b), "cwd": str(self.workspace)})
+    res_b = subprocess.run(
+      ["/bin/bash", str(SCRIPTS / "wrapper.sh")],
+      input=payload_b, env=env_a, capture_output=True, text=True, timeout=15,
+    )
+    self.assertEqual(res_b.returncode, 0, res_b.stderr)
+    out_b = ANSI.sub("", res_b.stdout)
+    self.assertNotIn("Opus 5.5", out_b)
+    self.assertNotIn("Cache:", out_b)
+
+    # M3: chmod 000 memo files must not trigger unbound variable under set -u.
+    cache_m3 = self.root / "cache-m3"
+    cache_m3.mkdir()
+    for name in (
+      f"tp-info-{tp_a.name}.memo",
+      f"cache2-widget-{tp_a.name}.memo",
+      f"tps3-widget-{tp_a.name}.memo",
+      "skills-widget-s-m3.memo",
+    ):
+      p = cache_m3 / name
+      p.write_text("0 0\n")
+      os.chmod(p, 0o000)
+    self.addCleanup(lambda: [os.chmod(p, 0o600) for p in cache_m3.glob("*.memo") if p.exists()])
+
+    herdr_dir = self.root / "herdr-app"
+    herdr_dir.mkdir()
+    env_m3 = self.base_env()
+    env_m3.pop("WT_NO_LOG", None)
+    env_m3.update({
+      "CC_WIDGET_CACHE_DIR": str(cache_m3),
+      "HERDR_APP_HOME": str(herdr_dir),
+      "HC_TERMINAL_ID": "t-m3",
+    })
+    res_m3 = subprocess.run(
+      ["/bin/bash", str(SCRIPTS / "wrapper.sh")],
+      input=json.dumps({"session_id": "s-m3", "transcript_path": str(tp_a), "cwd": str(self.workspace)}),
+      env=env_m3, capture_output=True, text=True, timeout=15,
+    )
+    self.assertEqual(res_m3.returncode, 0, res_m3.stderr)
+    self.assertNotIn("unbound variable", res_m3.stderr.lower())
+
+    # G1 + M1: outside Herdr skips skills scan/memo; inside Herdr with trailing-LF HC_TERMINAL_ID populates skills matching Perl $.
+    tp_sk = self.root / "skills.jsonl"
+    tp_sk.write_text(json.dumps({
+      "type": "assistant", "timestamp": "2026-11-26T01:00:00.000Z", "uuid": "u1",
+      "message": {"content": [{"type": "tool_use", "id": "tu1", "name": "Skill", "input": {"skill": "my-custom-skill"}}]},
+    }) + "\n")
+    cache_non_herdr = self.root / "cache-non-herdr"
+    cache_non_herdr.mkdir()
+    env_nh = self.base_env()
+    env_nh.pop("WT_NO_LOG", None)
+    env_nh.update({"CC_WIDGET_CACHE_DIR": str(cache_non_herdr), "HERDR_APP_HOME": str(self.root / "missing-herdr")})
+    res_nh = subprocess.run(
+      ["/bin/bash", str(SCRIPTS / "wrapper.sh")],
+      input=json.dumps({"session_id": "s-sk", "transcript_path": str(tp_sk), "cwd": str(self.workspace)}),
+      env=env_nh, capture_output=True, text=True, timeout=15,
+    )
+    self.assertEqual(res_nh.returncode, 0, res_nh.stderr)
+    self.assertFalse((cache_non_herdr / "skills-widget-s-sk.memo").exists())
+
+    herdr_m1 = self.root / "herdr-m1"
+    herdr_m1.mkdir()
+    cache_m1 = self.root / "cache-m1"
+    cache_m1.mkdir()
+    env_m1 = self.base_env()
+    env_m1.pop("WT_NO_LOG", None)
+    env_m1.update({
+      "CC_WIDGET_CACHE_DIR": str(cache_m1),
+      "HERDR_APP_HOME": str(herdr_m1),
+      "HC_TERMINAL_ID": "t1\n",
+    })
+    res_m1 = subprocess.run(
+      ["/bin/bash", str(SCRIPTS / "wrapper.sh")],
+      input=json.dumps({"session_id": "s-sk", "transcript_path": str(tp_sk), "cwd": str(self.workspace)}),
+      env=env_m1, capture_output=True, text=True, timeout=15,
+    )
+    self.assertEqual(res_m1.returncode, 0, res_m1.stderr)
+    status_files = list((herdr_m1 / "data" / "cc-status").glob("*.json"))
+    self.assertEqual(len(status_files), 1, status_files)
+    st_json = json.loads(status_files[0].read_text())
+    self.assertEqual([s["name"] for s in st_json["skills"]], ["my-custom-skill"])
+
 
 if __name__ == "__main__":
   unittest.main()

@@ -4,7 +4,7 @@
 set -uo pipefail
 
 CACHE_DIR="${CC_WIDGET_CACHE_DIR:-/tmp/cc-widget-cache}"
-mkdir -p "$CACHE_DIR" 2>/dev/null
+[[ -d "$CACHE_DIR" ]] || mkdir -p "$CACHE_DIR" 2>/dev/null
 
 CYAN=$'\033[38;5;30m'
 BLUE=$'\033[38;5;111m'
@@ -20,7 +20,11 @@ NORM=$'\033[22m'
 
 # ----- pill rendering layer (visual design adapted from Nanako0129/coralline,
 #       which is itself a tribute to romkatv/powerlevel10k) -----
-SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+case "$0" in
+  */*) _script_parent=${0%/*}; _script_parent=${_script_parent:-/} ;;
+  *)   _script_parent=. ;;
+esac
+SCRIPT_DIR=$(cd -- "$_script_parent" && pwd)
 
 WT_STYLE="pill"          # pill: powerline pills | lean: flat accent text
 WT_THEME="claude-coral"  # any file in themes/<name>.conf
@@ -253,7 +257,8 @@ seg_widths() {  # NUL-separated texts on stdin → one visible width per line
 }
 # ----- end pill rendering layer -----
 
-input=$(cat)
+input=""
+IFS= read -r -d '' input || true
 NOW_SEC_RENDER=$(date +%s)
 jqr() { jq -r "$1" <<<"$input" 2>/dev/null; }
 
@@ -337,6 +342,32 @@ fit_to_cols() {
 }
 
 fit_and_print_lines() {
+  local _max=$1 _l _r _pre _params _b _all_fit=1 _old_lc="${LC_ALL-}" _had_lc=0
+  shift
+  [[ "${LC_ALL+x}" == "x" ]] && _had_lc=1
+  LC_ALL=C
+  for _l in "$@"; do
+    _r="$_l" ; _b=0
+    while [[ "$_r" == *$'\033['* ]]; do
+      _pre="${_r%%$'\033['*}"
+      _b=$(( _b + ${#_pre} ))
+      _r="${_r#*$'\033['}"
+      if [[ "$_r" != *[a-zA-Z]* ]]; then _all_fit=0; break 2; fi
+      _params="${_r%%[a-zA-Z]*}"
+      if [[ "$_params" == *[^0-9\;]* ]]; then _all_fit=0; break 2; fi
+      _r="${_r#*[a-zA-Z]}"
+    done
+    _b=$(( _b + ${#_r} ))
+    if (( _b > _max )); then
+      _all_fit=0
+      break
+    fi
+  done
+  if (( _had_lc )); then LC_ALL="$_old_lc"; else unset LC_ALL; fi
+  if (( _all_fit )); then
+    for _l in "$@"; do printf '%s\n' "$_l"; done
+    return 0
+  fi
   perl -CSDA -e '
     sub cw {
       my $o = shift;
@@ -386,11 +417,25 @@ fit_and_print_lines() {
     for my $line (@ARGV) {
       print fit_one($max, $line), "\n";
     }
-  ' -- "$@"
+  ' -- "$_max" "$@"
 }
 
+# Small text caches use forkless Bash reads for regular files, falling back to cat for FIFOs/special files.
+read_widget() {
+  local _widget_file="$CACHE_DIR/$2" _widget_value=""
+  if [[ -f "$_widget_file" && -r "$_widget_file" ]]; then
+    IFS= read -r -d '' _widget_value < "$_widget_file" || true
+    while [[ "$_widget_value" == *$'\n' ]]; do _widget_value="${_widget_value%$'\n'}"; done
+  elif [[ -e "$_widget_file" ]]; then
+    _widget_value=$(cat "$_widget_file" || printf '%s' "$3")
+  else
+    _widget_value=$3
+  fi
+  printf -v "$1" '%s' "$_widget_value"
+} 2>/dev/null
+
 # Conditional widgets (read early so they can prefix line1 — most visible spot)
-runaway=$(cat "$CACHE_DIR/runaway.txt" 2>/dev/null || printf '')
+read_widget runaway runaway.txt ''
 
 # ----- Line 1 (batch parse stdin JSON in a single jq invocation) -----
 _in_fields=$(jq -r '
@@ -437,73 +482,187 @@ if [[ ( -z "$transcript_path" || ! -f "$transcript_path" ) && -n "$safe_session_
   (( ${#_tp_cand[@]} > 0 )) && transcript_path="${_tp_cand[0]}"
 fi
 
+# Compute the uncached transcript widgets from a shared suffix. Count raw lines
+# before discarding invalid JSON so both windows match their original tail ranges.
+transcript_recent() {
+  local lines=200
+  [[ -z "$tps_data" ]] && lines=2000
+  if (( t_size > 4194304 )); then
+    tail -c 4194304 "$transcript_path" 2>/dev/null | tail -n +2 | tail -n "$lines"
+  else
+    tail -n "$lines" "$transcript_path" 2>/dev/null
+  fi | jq -Rnr --arg info "${_tp_info:+1}" --arg hit "${cache_data:+1}" --arg tps "${tps_data:+1}" '
+    def model_info:
+      def cmd_eff:
+        if test("<local-command-stdout>Set effort level to ultracode") then "xhigh"
+        elif test("<local-command-stdout>Set effort level to (low|medium|high|xhigh|max)\\b") then
+          (capture("<local-command-stdout>Set effort level to (?<lvl>low|medium|high|xhigh|max)\\b") | .lvl)
+        elif test("<local-command-stdout>Set model to [^<]* with `(low|medium|high|xhigh|max)` effort") then
+          (capture("<local-command-stdout>Set model to [^<]* with `(?<lvl>low|medium|high|xhigh|max)` effort") | .lvl)
+        elif test("<local-command-stdout>[^\n<]*Effort stays (low|medium|high|xhigh|max)\\b") then
+          (capture("<local-command-stdout>[^\n<]*Effort stays (?<lvl>low|medium|high|xhigh|max)\\b") | .lvl)
+        else empty end;
+      def model_tag_eff:
+        if test(":(low|medium|high|xhigh|max)$") then
+          (capture(":(?<lvl>low|medium|high|xhigh|max)$") | .lvl)
+        elif test("\\((low|medium|high|xhigh|max)\\)$") then
+          (capture("\\((?<lvl>low|medium|high|xhigh|max)\\)$") | .lvl)
+        else null end;
+      . as $rows
+      | ([$rows[] | select(.type == "assistant" and .message.usage and (.message.model // "<synthetic>") != "<synthetic>")] | last) as $m
+      | ([
+          $rows[] |
+          if .type == "assistant" and .message.usage and (.message.model // "<synthetic>") != "<synthetic>" then
+            ((.requestedModel // .message.model // "") | model_tag_eff) as $tag
+            | (.perTurnEffort // $tag // .effort // empty)
+          elif .type == "user" and (.message.content | type) == "string" and (.message.content | contains("<local-command-stdout>")) then
+            (.message.content | cmd_eff)
+          else empty end
+        ] | last // "") as $eff
+      | if $m == null then
+          [ "", "", $eff, 0, 0, 0, "END" ]
+        else
+          ($m.requestedModel // $m.message.model // "?") as $mid
+          | ($mid
+              | if startswith("claude-opus-5-5") or . == "opus[1m]" or . == "opus" then "Opus 5.5"
+                elif startswith("claude-fable-5-1") or . == "fable[1m]" or . == "fable" then "Fable 5.1"
+                elif startswith("claude-fable-5") then "Fable 5"
+                elif startswith("claude-sonnet-5-5") or . == "sonnet[1m]" or . == "sonnet" then "Sonnet 5.5"
+                elif startswith("claude-haiku-5-5") or . == "haiku" then "Haiku 5.5"
+                else . end) as $mname
+          | (($m.message.usage.input_tokens // 0) + ($m.message.usage.cache_creation_input_tokens // 0) + ($m.message.usage.cache_read_input_tokens // 0)) as $used
+          | (if ($mid | test("gemini")) then 1048576 else 1000000 end) as $win
+          | [ $mname, $mid, $eff, ($used * 100 / $win | floor), $win, $used, "END" ]
+        end
+      | map(tostring) | join("\u001f");
+    def cache_hit:
+      [.[] | select(.message.usage and .timestamp)]
+      | sort_by(.timestamp) | last as $m
+      | if $m == null then "none" else
+          $m.message.usage as $u
+          | ($u.cache_read_input_tokens // 0) as $cr
+          | ($u.cache_creation_input_tokens // 0) as $cw
+          | ($u.input_tokens // 0) as $it
+          | ($cr + $cw + $it) as $tot
+          | ($m.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $last_ts
+          | "\((if $tot > 0 then ($cr * 100 / $tot | floor) else -1 end)) \($last_ts)"
+        end;
+    def output_speed:
+      def ep: (if endswith("Z") then rtrimstr("Z") else sub("Z$"; "") end) | split(".")
+        | ((.[0] + "Z") | fromdateiso8601) + (("0." + (.[1] // "0")) | tonumber);
+      def med: sort | if length == 0 then null
+        elif length % 2 == 1 then .[length / 2 | floor]
+        else (.[length / 2 - 1] + .[length / 2]) / 2 end;
+      reduce (.[] | select(.timestamp)) as $e ({req: null, m: {}, order: []};
+          if $e.type == "user" then .req = ($e.timestamp | ep)
+          elif $e.type == "assistant" and ($e.message.id // "") != ""
+               and ($e.message.model // "<synthetic>") != "<synthetic>" then
+            ($e.timestamp | ep) as $t | $e.message.id as $id
+            | (if .m[$id] == null
+               then .m[$id] = {model: $e.message.model, start: .req, end: $t, out: 0,
+                   first: $t, think: ($e.thinkingDurationMs // null),
+                   block: ($e.message.content | if type == "array" then (.[0].type // null) else null end)}
+                 | .order += [$id]
+               else . end)
+            | .m[$id].end = ([.m[$id].end, $t] | max)
+            | .m[$id].out = ([.m[$id].out, ($e.message.usage.output_tokens // 0)] | max)
+          else . end)
+      | . as $s | [$s.order[] | $s.m[.]]
+      | if length == 0 then "none" else
+          (last.model) as $cur
+          | ($cur | startswith("gpt-")) as $gpt
+          # <200 tokens is mostly time-to-first-token, which would drag the median down.
+          | [.[] | select(.model == $cur and .start != null and .out >= 200)
+              | .d = (.end - .start) | select(.d > 0.5 and .d <= 900)] as $ok
+          | ([$ok[] | .out / .d] | .[-5:]) as $e2e
+          | ([$ok[] | select(($gpt | not) and .block == "thinking" and (.think // 0) >= 2)
+              | (.first - .think / 1000) as $tf
+              | select($tf >= .start and .end > $tf)
+              | {dec: (.out / (.end - $tf)), ttft: ($tf - .start)}] | .[-5:]) as $dt
+          # GPT 即使記錄到 2ms 以上，也可能整包落筆，不能拿最後零點幾秒當生成時間。
+          | ([$ok[] | select(.block == "thinking" and ($gpt or (.think // 0) < 2))
+              | (.first - .start) | select(. >= 0)] | .[-5:]) as $bt
+          | [ (if ($e2e | length) < 2 then "--" else ($e2e | med | floor) end),
+              (if ($dt | length) == 0 then "-" else ([$dt[].dec] | med | floor) end),
+              (if ($dt | length) > 0 then ([$dt[].ttft] | med)
+               elif ($bt | length) > 0 then ($bt | med) else "-" end),
+              (if ($dt | length) > 0 then ([$dt[].dec] | med | floor)
+               elif ($bt | length) > 0 and ($e2e | length) > 0 then ($e2e | med | floor) else "-" end) ]
+          | map(tostring) | join(" ")
+        end;
+    # Parse failures act like null rows but still occupy a slot in the window.
+    [inputs | try fromjson catch null] as $rows
+    | (if $tps == "" then (try ($rows | output_speed) catch "") else "" end) as $speed
+    | (if $info == "" or $hit == "" then $rows[-200:] else [] end) as $recent
+    | (if $hit == "" then (try ($recent | cache_hit) catch "") else "" end) as $health
+    | (if $info == "" then (try ($recent | model_info) catch "") else "" end) as $model
+    | "\($speed)\n\($health)\n\($model)\nEND"
+  ' 2>/dev/null
+}
+
 # Read active session effort from transcript so /effort changes override static settings.json.
 t_stat="" ; t_mtime=0 ; t_size=0
 _tp_eff=""
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-  t_stat=$(stat -L -f '%m %z' "$transcript_path" 2>/dev/null)
+  if [[ "$OSTYPE" == linux* ]]; then
+    t_stat=$(stat -L -c '%Y %s' -- "$transcript_path" 2>/dev/null)
+  else
+    t_stat=$(stat -L -f '%m %z' "$transcript_path" 2>/dev/null)
+  fi
   read -r t_mtime t_size <<<"${t_stat:-0 0}"
   tp_info_memo="$CACHE_DIR/tp-info-${transcript_path##*/}.memo"
   _tp_info=""
+  _tp_m_stat="" ; _tp_m_data=""
   if [[ -n "$t_stat" && -f "$tp_info_memo" ]]; then
     { read -r _tp_m_stat; read -r _tp_m_data; } < "$tp_info_memo" 2>/dev/null || true
     [[ "$_tp_m_stat" == "$t_stat" ]] && _tp_info="$_tp_m_data"
   fi
-  if [[ -z "$_tp_info" ]]; then
-    _tp_info=$(
-      if (( t_size > 4194304 )); then
-        tail -c 4194304 "$transcript_path" 2>/dev/null | tail -n +2 | tail -n 200
-      else
-        tail -n 200 "$transcript_path" 2>/dev/null
-      fi | jq -Rnr '
-        def cmd_eff:
-          if test("<local-command-stdout>Set effort level to ultracode") then "xhigh"
-          elif test("<local-command-stdout>Set effort level to (low|medium|high|xhigh|max)\\b") then
-            (capture("<local-command-stdout>Set effort level to (?<lvl>low|medium|high|xhigh|max)\\b") | .lvl)
-          elif test("<local-command-stdout>Set model to [^<]* with `(low|medium|high|xhigh|max)` effort") then
-            (capture("<local-command-stdout>Set model to [^<]* with `(?<lvl>low|medium|high|xhigh|max)` effort") | .lvl)
-          elif test("<local-command-stdout>[^\n<]*Effort stays (low|medium|high|xhigh|max)\\b") then
-            (capture("<local-command-stdout>[^\n<]*Effort stays (?<lvl>low|medium|high|xhigh|max)\\b") | .lvl)
-          else empty end;
-        def model_tag_eff:
-          if test(":(low|medium|high|xhigh|max)$") then
-            (capture(":(?<lvl>low|medium|high|xhigh|max)$") | .lvl)
-          elif test("\\((low|medium|high|xhigh|max)\\)$") then
-            (capture("\\((?<lvl>low|medium|high|xhigh|max)\\)$") | .lvl)
-          else null end;
-        [inputs | fromjson?] as $rows
-        | ([$rows[] | select(.type == "assistant" and .message.usage and (.message.model // "<synthetic>") != "<synthetic>")] | last) as $m
-        | ([
-            $rows[] |
-            if .type == "assistant" and .message.usage and (.message.model // "<synthetic>") != "<synthetic>" then
-              ((.requestedModel // .message.model // "") | model_tag_eff) as $tag
-              | (.perTurnEffort // $tag // .effort // empty)
-            elif .type == "user" and (.message.content | type) == "string" and (.message.content | contains("<local-command-stdout>")) then
-              (.message.content | cmd_eff)
-            else empty end
-          ] | last // "") as $eff
-        | if $m == null then
-            [ "", "", $eff, 0, 0, 0, "END" ]
-          else
-            ($m.requestedModel // $m.message.model // "?") as $mid
-            | ($mid
-                | if startswith("claude-opus-5-5") or . == "opus[1m]" or . == "opus" then "Opus 5.5"
-                  elif startswith("claude-fable-5-1") or . == "fable[1m]" or . == "fable" then "Fable 5.1"
-                  elif startswith("claude-fable-5") then "Fable 5"
-                  elif startswith("claude-sonnet-5-5") or . == "sonnet[1m]" or . == "sonnet" then "Sonnet 5.5"
-                  elif startswith("claude-haiku-5-5") or . == "haiku" then "Haiku 5.5"
-                  else . end) as $mname
-            | (($m.message.usage.input_tokens // 0) + ($m.message.usage.cache_creation_input_tokens // 0) + ($m.message.usage.cache_read_input_tokens // 0)) as $used
-            | (if ($mid | test("gemini")) then 1048576 else 1000000 end) as $win
-            | [ $mname, $mid, $eff, ($used * 100 / $win | floor), $win, $used, "END" ]
-          end
-        | map(tostring) | join("\u001f")
-      ' 2>/dev/null
-    )
-    if [[ -n "$t_stat" && -n "$_tp_info" && -d "$CACHE_DIR" ]]; then
-      memo_tmp=$(mktemp "$CACHE_DIR/.tp-info.XXXXXX" 2>/dev/null) &&
-        printf '%s\n%s\n' "$t_stat" "$_tp_info" > "$memo_tmp" &&
-        mv "$memo_tmp" "$tp_info_memo"
+  cache_memo="$CACHE_DIR/cache2-widget-${transcript_path##*/}.memo"
+  cache_data=""
+  memo_mtime=0 ; memo_size=0 ; memo_calc_ts=0 ; memo_data=""
+  if [[ -n "$t_stat" && -f "$cache_memo" ]]; then
+    { read -r memo_mtime memo_size memo_calc_ts; read -r memo_data; } < "$cache_memo" 2>/dev/null || true
+    [[ "${memo_calc_ts:-}" =~ ^[0-9]+$ ]] || memo_calc_ts=0
+    if [[ "$memo_mtime $memo_size" == "$t_stat" ]] \
+       || (( t_size > 65536 && NOW_SEC_RENDER >= memo_calc_ts && NOW_SEC_RENDER - memo_calc_ts < 10 )); then
+      cache_data="$memo_data"
+    fi
+  fi
+  # 改用新快取名稱，避免未更新的 transcript 繼續顯示舊算法的高數字。
+  tps_memo="$CACHE_DIR/tps3-widget-${transcript_path##*/}.memo"
+  tps_data=""
+  tps_m_mtime=0 ; tps_m_size=0 ; tps_m_calc_ts=0 ; tps_memo_data=""
+  if [[ -n "$t_stat" && -f "$tps_memo" ]]; then
+    { read -r tps_m_mtime tps_m_size tps_m_calc_ts; read -r tps_memo_data; } < "$tps_memo" 2>/dev/null || true
+    [[ "${tps_m_calc_ts:-}" =~ ^[0-9]+$ ]] || tps_m_calc_ts=0
+    if [[ "$tps_m_mtime $tps_m_size" == "$t_stat" ]] \
+       || (( ${t_size:-0} > 65536 && NOW_SEC_RENDER >= tps_m_calc_ts && NOW_SEC_RENDER - tps_m_calc_ts < 10 )); then
+      tps_data="$tps_memo_data"
+    fi
+  fi
+  hit_and_ts=""
+  if [[ -z "$_tp_info" || -z "$cache_data" || -z "$tps_data" ]]; then
+    _recent=$(transcript_recent)
+    if [[ -n "$_recent" ]]; then
+      _recent="${_recent%$'\n'END}"
+      if [[ -z "$tps_data" ]]; then
+        tps_data="${_recent%%$'\n'*}"
+        if [[ -n "$t_stat" && -n "$tps_data" && -d "$CACHE_DIR" ]]; then
+          memo_tmp=$(mktemp "$CACHE_DIR/.tps-widget.XXXXXX" 2>/dev/null) &&
+            printf '%s %s\n%s\n' "$t_stat" "$NOW_SEC_RENDER" "$tps_data" > "$memo_tmp" &&
+            mv "$memo_tmp" "$tps_memo"
+        fi
+      fi
+      _recent="${_recent#*$'\n'}"
+      hit_and_ts="${_recent%%$'\n'*}"
+      if [[ -z "$_tp_info" ]]; then
+        _tp_info="${_recent#*$'\n'}"
+        if [[ -n "$t_stat" && -n "$_tp_info" && -d "$CACHE_DIR" ]]; then
+          memo_tmp=$(mktemp "$CACHE_DIR/.tp-info.XXXXXX" 2>/dev/null) &&
+            printf '%s\n%s\n' "$t_stat" "$_tp_info" > "$memo_tmp" &&
+            mv "$memo_tmp" "$tp_info_memo"
+        fi
+      fi
     fi
   fi
   if [[ -n "$_tp_info" ]]; then
@@ -540,17 +699,6 @@ hit=""
 idle_ts=""
 compactions=0
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-  cache_memo="$CACHE_DIR/cache2-widget-${transcript_path##*/}.memo"
-  cache_data=""
-  memo_mtime=0 ; memo_size=0 ; memo_calc_ts=0 ; memo_data=""
-  if [[ -n "$t_stat" && -f "$cache_memo" ]]; then
-    { read -r memo_mtime memo_size memo_calc_ts; read -r memo_data; } < "$cache_memo" 2>/dev/null || true
-    [[ "${memo_calc_ts:-}" =~ ^[0-9]+$ ]] || memo_calc_ts=0
-    if [[ "$memo_mtime $memo_size" == "$t_stat" ]] \
-       || (( t_size > 65536 && NOW_SEC_RENDER >= memo_calc_ts && NOW_SEC_RENDER - memo_calc_ts < 10 )); then
-      cache_data="$memo_data"
-    fi
-  fi
   if [[ -z "$cache_data" ]]; then
     prev_compactions=0
     if [[ -n "$memo_data" && "$memo_data" != "none" ]]; then
@@ -581,25 +729,6 @@ if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
       ' "$transcript_path" "$comp_offset" "$comp_span" 2>/dev/null || echo 0)
     fi
     compactions=$(( comp_base + ${delta_comp:-0} ))
-    hit_and_ts=$(
-      if (( t_size > 4194304 )); then
-        tail -c 4194304 "$transcript_path" 2>/dev/null | tail -n +2 | tail -n 200
-      else
-        tail -n 200 "$transcript_path" 2>/dev/null
-      fi | jq -Rnr '
-        [inputs | fromjson? | select(.message.usage and .timestamp)]
-        | sort_by(.timestamp) | last as $m
-        | if $m == null then "none" else
-            $m.message.usage as $u
-            | ($u.cache_read_input_tokens // 0) as $cr
-            | ($u.cache_creation_input_tokens // 0) as $cw
-            | ($u.input_tokens // 0) as $it
-            | ($cr + $cw + $it) as $tot
-            | ($m.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) as $last_ts
-            | "\((if $tot > 0 then ($cr * 100 / $tot | floor) else -1 end)) \($last_ts)"
-          end
-      ' 2>/dev/null
-    )
     if [[ -n "$hit_and_ts" && "$hit_and_ts" != "none" ]]; then
       cache_data="$hit_and_ts $compactions"
     else
@@ -657,75 +786,6 @@ ttft=""
 tps_shown=""
 tps_fmt=""
 if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-  # 改用新快取名稱，避免未更新的 transcript 繼續顯示舊算法的高數字。
-  tps_memo="$CACHE_DIR/tps3-widget-${transcript_path##*/}.memo"
-  tps_data=""
-  if [[ -n "$t_stat" && -f "$tps_memo" ]]; then
-    { read -r tps_m_mtime tps_m_size tps_m_calc_ts; read -r memo_data; } < "$tps_memo" 2>/dev/null || true
-    [[ "${tps_m_calc_ts:-}" =~ ^[0-9]+$ ]] || tps_m_calc_ts=0
-    if [[ "$tps_m_mtime $tps_m_size" == "$t_stat" ]] \
-       || (( ${t_size:-0} > 65536 && NOW_SEC_RENDER >= tps_m_calc_ts && NOW_SEC_RENDER - tps_m_calc_ts < 10 )); then
-      tps_data="$memo_data"
-    fi
-  fi
-  if [[ -z "$tps_data" ]]; then
-    # tail keeps the cost flat on long sessions; 2000 lines spans far more than 5 responses.
-    tps_data=$(
-      if (( ${t_size:-0} > 4194304 )); then
-        tail -c 4194304 "$transcript_path" 2>/dev/null | tail -n +2 | tail -n 2000
-      else
-        tail -n 2000 "$transcript_path" 2>/dev/null
-      fi | jq -Rnr '
-      def ep: sub("Z$"; "") | split(".")
-        | ((.[0] + "Z") | fromdateiso8601) + (("0." + (.[1] // "0")) | tonumber);
-      def med: sort | if length == 0 then null
-        elif length % 2 == 1 then .[length / 2 | floor]
-        else (.[length / 2 - 1] + .[length / 2]) / 2 end;
-      [inputs | fromjson? | select(.timestamp)]
-      | reduce .[] as $e ({req: null, m: {}, order: []};
-          if $e.type == "user" then .req = ($e.timestamp | ep)
-          elif $e.type == "assistant" and ($e.message.id // "") != ""
-               and ($e.message.model // "<synthetic>") != "<synthetic>" then
-            ($e.timestamp | ep) as $t | $e.message.id as $id
-            | (if .m[$id] == null
-               then .m[$id] = {model: $e.message.model, start: .req, end: $t, out: 0,
-                   first: $t, think: ($e.thinkingDurationMs // null),
-                   block: ($e.message.content | if type == "array" then (.[0].type // null) else null end)}
-                 | .order += [$id]
-               else . end)
-            | .m[$id].end = ([.m[$id].end, $t] | max)
-            | .m[$id].out = ([.m[$id].out, ($e.message.usage.output_tokens // 0)] | max)
-          else . end)
-      | . as $s | [$s.order[] | $s.m[.]]
-      | if length == 0 then "none" else
-          (last.model) as $cur
-          | ($cur | startswith("gpt-")) as $gpt
-          # <200 tokens is mostly time-to-first-token, which would drag the median down.
-          | [.[] | select(.model == $cur and .start != null and .out >= 200)
-              | .d = (.end - .start) | select(.d > 0.5 and .d <= 900)] as $ok
-          | ([$ok[] | .out / .d] | .[-5:]) as $e2e
-          | ([$ok[] | select(($gpt | not) and .block == "thinking" and (.think // 0) >= 2)
-              | (.first - .think / 1000) as $tf
-              | select($tf >= .start and .end > $tf)
-              | {dec: (.out / (.end - $tf)), ttft: ($tf - .start)}] | .[-5:]) as $dt
-          # GPT 即使記錄到 2ms 以上，也可能整包落筆，不能拿最後零點幾秒當生成時間。
-          | ([$ok[] | select(.block == "thinking" and ($gpt or (.think // 0) < 2))
-              | (.first - .start) | select(. >= 0)] | .[-5:]) as $bt
-          | [ (if ($e2e | length) < 2 then "--" else ($e2e | med | floor) end),
-              (if ($dt | length) == 0 then "-" else ([$dt[].dec] | med | floor) end),
-              (if ($dt | length) > 0 then ([$dt[].ttft] | med)
-               elif ($bt | length) > 0 then ($bt | med) else "-" end),
-              (if ($dt | length) > 0 then ([$dt[].dec] | med | floor)
-               elif ($bt | length) > 0 and ($e2e | length) > 0 then ($e2e | med | floor) else "-" end) ]
-          | map(tostring) | join(" ")
-        end
-    ' 2>/dev/null)
-    if [[ -n "$t_stat" && -n "$tps_data" && -d "$CACHE_DIR" ]]; then
-      memo_tmp=$(mktemp "$CACHE_DIR/.tps-widget.XXXXXX" 2>/dev/null) &&
-        printf '%s %s\n%s\n' "$t_stat" "$NOW_SEC_RENDER" "$tps_data" > "$memo_tmp" &&
-        mv "$memo_tmp" "$tps_memo"
-    fi
-  fi
   if [[ -n "$tps_data" && "$tps_data" != "none" ]]; then
     read -r tps tps_decode ttft tps_shown <<<"$tps_data"
     [[ "$tps_decode" =~ ^[0-9]+$ ]] || tps_decode=""
@@ -744,6 +804,24 @@ fi
 
 printf -v session_cost_fmt '$%.2f' "${session_cost_usd:-0}" 2>/dev/null || session_cost_fmt='$0.00'
 
+# Include the trailing separator in stat output so trimming its newlines yields
+# the same memo key as the original stat | tr pipeline on BSD.
+stat_memo_key() {
+  local _stat_var=$1 _stat_value="" _stat_path
+  shift
+  # An all-missing set already has the same empty signature.
+  for _stat_path in "$@"; do
+    [[ -e "$_stat_path" ]] || continue
+    if [[ "$OSTYPE" == linux* ]]; then
+      _stat_value=$(stat -L -c '%.9Y:%s|' -- "$@" 2>/dev/null)
+    else
+      _stat_value=$(stat -L -f '%Fm:%z|' "$@" 2>/dev/null)
+    fi
+    break
+  done
+  printf -v "$_stat_var" '%s' "${_stat_value//$'\n'/}"
+}
+
 git_branch_fmt="⎇ no git"
 git_ab_fmt="(no git)"
 git_dirty=0
@@ -758,10 +836,11 @@ if [[ -n "$cwd" ]] && cd "$cwd" 2>/dev/null; then
   if [[ -f .git ]]; then
     read -r _ git_dir < .git 2>/dev/null || git_dir=".git"
   fi
-  g_stat=$(stat -L -f '%Fm:%z' "$git_dir/HEAD" "$git_dir/index" 2>/dev/null | tr '\n' '|')
+  stat_memo_key g_stat "$git_dir/HEAD" "$git_dir/index"
   : "${g_stat:=no-git-dir}"
   git_cached=0
   if [[ -f "$git_memo" ]]; then
+    g_memo_ts=0 ; g_memo_stat="" ; g_memo_cwd=""
     { read -r g_memo_ts g_memo_stat; read -r g_memo_cwd; IFS=$'\037' read -r git_dirty git_branch_fmt git_ab_fmt; } < "$git_memo" 2>/dev/null || true
     [[ "${g_memo_ts:-}" =~ ^[0-9]+$ ]] || g_memo_ts=0
     if (( NOW_SEC_RENDER >= g_memo_ts && NOW_SEC_RENDER - g_memo_ts < 5 )) && [[ "$g_memo_stat" == "$g_stat" && "$g_memo_cwd" == "$cwd" ]]; then
@@ -806,57 +885,12 @@ fi
 skill_name=""
 skills_json="[]"
 if [[ -n "$safe_session_id" ]]; then
-  skill_name=$(cat "$CACHE_DIR/skill-${safe_session_id}.txt" 2>/dev/null)
+  read_widget skill_name "skill-${safe_session_id}.txt" ''
   if [[ -n "$model_id" && "$model_id" != "?" && "$model_id" != "<synthetic>" && -d "$CACHE_DIR" ]]; then
     if model_tmp=$(mktemp "$CACHE_DIR/.model-${safe_session_id}.XXXXXX" 2>/dev/null); then
       printf '%s' "$model_id" > "$model_tmp" 2>/dev/null && mv "$model_tmp" "$CACHE_DIR/model-${safe_session_id}.txt" 2>/dev/null || rm -f "$model_tmp"
     fi
   fi
-  skills_memo="$CACHE_DIR/skills-widget-${safe_session_id}.memo"
-  tp_skills="[]"
-  skills_cached=0
-  if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
-    if [[ -n "${t_stat:-}" && -f "$skills_memo" ]]; then
-      { read -r sk_m_mtime sk_m_size; read -r sk_m_json; } < "$skills_memo" 2>/dev/null || true
-      if [[ "$sk_m_mtime $sk_m_size" == "$t_stat" && -n "$sk_m_json" ]]; then
-        tp_skills="$sk_m_json"
-        skills_cached=1
-      fi
-    fi
-    if (( ! skills_cached )); then
-      tp_skills=$(jq -Rcnr '
-        def is_builtin: test("^(clear|compact|reload-plugins|help|exit|quit|model|effort|fast|config|status|permissions|hooks|mcp|plugin|login|logout|doctor|memory|cost|resume|rename|color|vim|theme)$");
-        [inputs | fromjson? | select(.timestamp) |
-          (.timestamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0) as $ts |
-          (.uuid // .timestamp) as $ev_id |
-          if .type == "assistant" and (.message.content | type) == "array" then
-            (.message.content[] | select(.type == "tool_use" and .name == "Skill" and (.input.skill | type) == "string") | {key: (.id // $ev_id), name: .input.skill, ts: $ts})
-          elif .type == "user" and (.message.content | type) == "string" then
-            (.message.content | capture("<command-name>/(?<cmd>[a-zA-Z0-9_:-]+)</command-name>")? | select(.cmd != null) | {key: $ev_id, name: .cmd, ts: $ts})
-          else empty end
-          | select((.name | is_builtin) | not)
-        ] | unique_by(.key)' "$transcript_path" 2>/dev/null || echo "[]")
-      if [[ -n "${t_stat:-}" && -d "$CACHE_DIR" ]]; then
-        memo_tmp=$(mktemp "$CACHE_DIR/.skills-widget.XXXXXX" 2>/dev/null) &&
-          printf '%s\n%s\n' "$t_stat" "$tp_skills" > "$memo_tmp" &&
-          mv "$memo_tmp" "$skills_memo"
-      fi
-    fi
-  fi
-  skills_json=$(jq -nc \
-    --argjson tp "${tp_skills:-[]}" \
-    --arg cur "${skill_name:-}" '
-    def is_builtin: test("^(clear|compact|reload-plugins|help|exit|quit|model|effort|fast|config|status|permissions|hooks|mcp|plugin|login|logout|doctor|memory|cost|resume|rename|color|vim|theme)$");
-    ($tp + (if ($cur | length) > 0 and (($cur | is_builtin) | not) then [{key: "cur", name: $cur, ts: 0}] else [] end))
-    | map(select((.name // "") != "" and ((.name | is_builtin) | not)))
-    | group_by(.name)
-    | map({
-        name: .[0].name,
-        ts: (map(.ts // 0) | max),
-        count: ([.[] | select(.key != "cur") | .key] | unique | length | if . == 0 then 1 else . end)
-      })
-    | sort_by(-.ts)
-  ' 2>/dev/null || echo "[]")
 fi
 if [[ -n "$skill_name" ]]; then
   skills_fmt="🪄 $skill_name"
@@ -1608,10 +1642,11 @@ if [[ -x "$HOME/.claude/scripts/usage-color.sh" ]]; then
   _u_files=("$QUOTA_CACHE_DIR"/quota-*.json "$QUOTA_CACHE_DIR"/quota-*.status)
   shopt -u nullglob
   u_stat="empty"
-  (( ${#_u_files[@]} > 0 )) && u_stat=$(stat -L -f '%Fm:%z' "${_u_files[@]}" 2>/dev/null | tr '\n' '|')
+  (( ${#_u_files[@]} > 0 )) && stat_memo_key u_stat "${_u_files[@]}"
   : "${u_stat:=empty}"
   u_cached=0
   if [[ -f "$usage_memo" ]]; then
+    u_memo_ts=0 ; u_memo_stat=""
     { read -r u_memo_ts u_memo_stat; read -r usage_part; } < "$usage_memo" 2>/dev/null || true
     [[ "${u_memo_ts:-}" =~ ^[0-9]+$ ]] || u_memo_ts=0
     if (( NOW_SEC_RENDER >= u_memo_ts && NOW_SEC_RENDER - u_memo_ts < 5 )) && [[ "$u_memo_stat" == "$u_stat" ]]; then
@@ -1663,7 +1698,7 @@ fi
 
 vendor_memo="$CACHE_DIR/vendor-pills.memo"
 _v_samples="${GROK_QUOTA_SAMPLES:-$HOME/.cli-proxy-api/grok-quota-samples.jsonl}"
-v_stat=$(stat -L -f '%Fm:%z' \
+stat_memo_key v_stat \
   "$QUOTA_CACHE_DIR/vendor-codex-pool.json" \
   "$QUOTA_CACHE_DIR/vendor-codex-pool.status" \
   "$QUOTA_CACHE_DIR/vendor-codex-local.json" \
@@ -1672,11 +1707,11 @@ v_stat=$(stat -L -f '%Fm:%z' \
   "$QUOTA_CACHE_DIR/vendor-grok-bot-local.json" \
   "$QUOTA_CACHE_DIR/vendor-grok-bot-local.status" \
   "$QUOTA_CACHE_DIR/vendor-devin-pool.json" \
-  "$QUOTA_CACHE_DIR/vendor-devin-pool.status" \
-  2>/dev/null | tr '\n' '|')
+  "$QUOTA_CACHE_DIR/vendor-devin-pool.status"
 : "${v_stat:=empty}"
 v_cached=0
 if [[ -f "$vendor_memo" ]]; then
+  v_memo_ts=0 ; v_memo_stat="" ; _v_end=""
   {
     read -r v_memo_ts v_memo_stat
     IFS=$'\037' read -r CODEX_PILL_OUT CODEX_WEEKLY_REMAINING_PCT CODEX_WEEKLY_USED_PCT CODEX_WEEKLY_RESET_AT \
@@ -1751,16 +1786,19 @@ while (( i < bar_width )); do
   i=$(( i + 1 ))
 done
 ctx_bar_fmt="⛁ [${bar}] ${ctx_used_k}k/${ctx_total_k}k (${ctx_used_int}%)"
-fg_var _fg_ctx "$(pct_color "$ctx_used_int")"
+if   (( ctx_used_int >= 75 )); then _ctx_pc="$VL_FG_HOT"
+elif (( ctx_used_int >= 50 )); then _ctx_pc="$VL_FG_WARN"
+else                                _ctx_pc="$VL_FG_OK"; fi
+fg_var _fg_ctx "$_ctx_pc"
 fg_var _fg_dim "$VL_FG_DIM"
 ctx_seg="${_fg_ctx}⛁ ${bar} ${ctx_used_int}%${RST}${_fg_dim} ${ctx_used_k}k/${ctx_total_k}k${RST}"
 
 # read daemon-written widgets
-cpu=$(cat "$CACHE_DIR/cpu.txt" 2>/dev/null || printf 'CPU: ?')
-thermals=$(cat "$CACHE_DIR/thermals.txt" 2>/dev/null || printf '🌡️ ?')
-free_mem=$(cat "$CACHE_DIR/memory.txt" 2>/dev/null || printf 'Mem: ?')
-disk=$(cat "$CACHE_DIR/disk.txt" 2>/dev/null || printf '💾 ?')
-battery=$(cat "$CACHE_DIR/battery.txt" 2>/dev/null || printf '🔋?')
+read_widget cpu cpu.txt 'CPU: ?'
+read_widget thermals thermals.txt '🌡️ ?'
+read_widget free_mem memory.txt 'Mem: ?'
+read_widget disk disk.txt '💾 ?'
+read_widget battery battery.txt '🔋?'
 
 push_seg 3 "$WT_BG_CTX"  "$ctx_seg"
 push_seg 3 "$WT_BG_SYS"  "$cpu"
@@ -1789,7 +1827,9 @@ if [[ -z "${WT_NO_LOG:-}" && -z "${WT_FORCE_STDOUT:-}" && -n "${HC_TERMINAL_ID:-
 fi
 
 if (( ! herdr_mod_active )); then
-  cols=$(probe_cols)
+  if [[ -n "${WT_FORCE_COLS:-}" ]]; then cols="$WT_FORCE_COLS"
+  elif [[ "${COLUMNS:-}" =~ ^[0-9]+$ ]] && (( COLUMNS > 0 )); then cols="$COLUMNS"
+  else cols=$(probe_cols); fi
   effective_cols=20
   if [[ -n "$cols" && "$cols" -gt 0 ]]; then
     effective_cols=$(( cols - 6 ))
@@ -1880,6 +1920,62 @@ if [[ -d "$herdr_app_dir" || "$herdr_hc_local" == "1" ]]; then
   if [[ "${HERDR_GLOBAL_ONLY:-0}" != "1" && "${HC_TERMINAL_ID:-}" =~ ^[A-Za-z0-9_/-]{1,72}$ ]]; then
     auto_mode=$(python3 -IB "$SCRIPT_DIR/../auto-mode/mode.py" status 2>/dev/null |
       jq -r '.enabled == true' 2>/dev/null) || auto_mode=false
+  fi
+  # Only the per-terminal Herdr payload consumes transcript skills; match Perl's `$` trailing-LF semantics.
+  skills_json="[]"
+  _hc_tid="${HC_TERMINAL_ID:-}"
+  if [[ -n "$safe_session_id" && "${HERDR_GLOBAL_ONLY:-0}" != "1" && "${_hc_tid%$'\n'}" =~ ^[A-Za-z0-9_/-]+$ ]]; then
+    skills_memo="$CACHE_DIR/skills-widget-${safe_session_id}.memo"
+    tp_skills="[]"
+    skills_cached=0
+    if [[ -n "$transcript_path" && -f "$transcript_path" ]]; then
+      sk_m_mtime="" ; sk_m_size="" ; sk_m_json=""
+      if [[ -n "${t_stat:-}" && -f "$skills_memo" ]]; then
+        { read -r sk_m_mtime sk_m_size; read -r sk_m_json; } < "$skills_memo" 2>/dev/null || true
+        if [[ "$sk_m_mtime $sk_m_size" == "$t_stat" && -n "$sk_m_json" ]]; then
+          tp_skills="$sk_m_json"
+          skills_cached=1
+        fi
+      fi
+      if (( ! skills_cached )); then
+        tp_skills=$(jq -Rcnr '
+          def is_builtin: test("^(clear|compact|reload-plugins|help|exit|quit|model|effort|fast|config|status|permissions|hooks|mcp|plugin|login|logout|doctor|memory|cost|resume|rename|color|vim|theme)$");
+          [inputs | fromjson? | select(.timestamp) |
+            .timestamp as $stamp |
+            # Preserve the original scan failure on a non-string timestamp.
+            if ($stamp | type) != "string" then error("invalid skill timestamp") else . end |
+            (.uuid // $stamp) as $ev_id |
+            (if .type == "assistant" and (.message.content | type) == "array" then
+              (.message.content[] | select(.type == "tool_use" and .name == "Skill" and (.input.skill | type) == "string") | {key: (.id // $ev_id), name: .input.skill})
+            elif .type == "user" and (.message.content | type) == "string" then
+              (.message.content | capture("<command-name>/(?<cmd>[a-zA-Z0-9_:-]+)</command-name>")? | select(.cmd != null) | {key: $ev_id, name: .cmd})
+            else empty end)
+            | select((.name | is_builtin) | not)
+            | .ts = ($stamp | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0)
+          ] | unique_by(.key)' "$transcript_path" 2>/dev/null || echo "[]")
+        if [[ -n "${t_stat:-}" && -d "$CACHE_DIR" ]]; then
+          memo_tmp=$(mktemp "$CACHE_DIR/.skills-widget.XXXXXX" 2>/dev/null) &&
+            printf '%s\n%s\n' "$t_stat" "$tp_skills" > "$memo_tmp" &&
+            mv "$memo_tmp" "$skills_memo"
+        fi
+      fi
+    fi
+    if [[ "$tp_skills" != "[]" || -n "$skill_name" ]]; then
+      skills_json=$(jq -nc \
+        --argjson tp "${tp_skills:-[]}" \
+        --arg cur "${skill_name:-}" '
+        def is_builtin: test("^(clear|compact|reload-plugins|help|exit|quit|model|effort|fast|config|status|permissions|hooks|mcp|plugin|login|logout|doctor|memory|cost|resume|rename|color|vim|theme)$");
+        ($tp + (if ($cur | length) > 0 and (($cur | is_builtin) | not) then [{key: "cur", name: $cur, ts: 0}] else [] end))
+        | map(select((.name // "") != "" and ((.name | is_builtin) | not)))
+        | group_by(.name)
+        | map({
+            name: .[0].name,
+            ts: (map(.ts // 0) | max),
+            count: ([.[] | select(.key != "cur") | .key] | unique | length | if . == 0 then 1 else . end)
+          })
+        | sort_by(-.ts)
+      ' 2>/dev/null || echo "[]")
+    fi
   fi
   {
     for _ln in 1 2 3; do
@@ -2138,7 +2234,7 @@ fi
 WIDGET_LOG_DIR="$HOME/.claude/projects/widget-log"
 WIDGET_LOG_LAST="$CACHE_DIR/.widget-log-last-ts"
 NOW_SEC=$(date +%s)
-LAST_SEC=$(cat "$WIDGET_LOG_LAST" 2>/dev/null || echo 0)
+read_widget LAST_SEC .widget-log-last-ts '0'
 [[ "$LAST_SEC" =~ ^[0-9]+$ ]] || LAST_SEC=0
 if (( NOW_SEC - LAST_SEC >= 300 || NOW_SEC < LAST_SEC )); then
   if [[ -d "$CACHE_DIR" ]]; then
